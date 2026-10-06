@@ -1,0 +1,37 @@
+* { box-sizing: border-box; }
+body { margin: 0; background: #f4f5f7; color: #222; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans JP", sans-serif; font-size: 15px; }
+.page { width: min(720px, calc(100% - 32px)); margin: 48px auto; }
+.page-header { margin-bottom: 26px; }
+.project-label { margin: 0 0 8px; color: #666; font-size: 13px; }
+h1 { margin: 0; font-size: 27px; font-weight: 650; }
+.lead { margin: 9px 0 0; color: #555; line-height: 1.7; }
+.panel { margin-bottom: 18px; padding: 22px; border: 1px solid #ddd; border-radius: 8px; background: #fff; }
+h2 { margin: 0; font-size: 18px; }
+.help { margin: 7px 0 13px; color: #666; font-size: 13px; }
+textarea { display: block; width: 100%; min-height: 210px; padding: 12px; resize: vertical; border: 1px solid #bbb; border-radius: 5px; font: inherit; line-height: 1.7; }
+textarea:focus { outline: 2px solid #9ab9e4; border-color: #527eaf; }
+.voice-inputs { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 12px; }
+.voice-button, .file-button { min-height: 58px; display: flex; align-items: center; gap: 11px; padding: 9px 12px; border: 1px solid #c9d3df; border-radius: 6px; background: #f8fafc; text-align: left; }
+.voice-button:hover, .file-button:hover { background: #f0f5fa; }
+.voice-button strong, .voice-button small, .file-button strong, .file-button small { display: block; }
+.voice-button strong, .file-button strong { font-size: 13px; font-weight: 600; }
+.voice-button small, .file-button small { margin-top: 3px; color: #6d7782; font-size: 11px; }
+.mic-icon, .file-icon { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 50%; background: #e8eef6; font-size: 17px; }
+.file-button { cursor: pointer; }
+.file-button input { display: none; }
+.controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; }
+button { min-height: 38px; padding: 8px 13px; border: 1px solid #bbb; border-radius: 5px; background: #fff; color: #222; font: inherit; font-size: 14px; cursor: pointer; }
+button:hover { background: #f2f4f6; }
+.primary { margin-left: auto; border-color: #315f91; background: #315f91; color: #fff; }
+.primary:hover { background: #254d78; }
+.audio-input { margin-top: 15px; color: #555; font-size: 13px; }
+.audio-input summary { cursor: pointer; }
+.audio-input input { display: block; margin-top: 10px; font: inherit; }
+.suggestion { padding: 14px 0; border-bottom: 1px solid #e5e5e5; }
+.suggestion:last-child { border-bottom: 0; padding-bottom: 0; }
+.suggestion h3 { margin: 0 0 7px; font-size: 16px; }
+.suggestion p { margin: 0; color: #444; line-height: 1.7; }
+.suggestion .next-step { margin-top: 8px; color: #555; font-size: 13px; }
+.hidden { display: none; }
+footer { padding: 8px 0 24px; color: #777; font-size: 12px; }
+@media (max-width: 520px) { .page { margin-top: 28px; } .panel { padding: 17px; } h1 { font-size: 24px; } .primary { margin-left: 0; width: 100%; } .voice-inputs { grid-template-columns: 1fr; } }

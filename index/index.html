@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ハイパー会話レコーダー</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <main class="page">
+    <header class="page-header">
+      <h1>ハイパー会話レコーダー</h1>
+      <p class="lead">会話の内容から、決まらなかったことへの解決案を考えます。</p>
+    </header>
+
+    <section class="panel" aria-labelledby="input-heading">
+      <h2 id="input-heading">会話の内容</h2>
+      <p class="help">音声を入力し、必要なら変更を加えてください。</p>
+      <textarea id="transcript" placeholder="例：\n田中：新しい企画を来月から始めたいです。\n佐藤：準備の時間が足りるか心配です。\n田中：まずは小さく始めて、様子を見るのはどうでしょう？"></textarea>
+      <div class="voice-inputs">
+        <button class="voice-button" type="button"><span class="mic-icon">🎙</span><span><strong>マイクで入力</strong><small>クリックして音声入力</small></span></button>
+        <label class="file-button"><span class="file-icon">♫</span><span><strong>音声ファイル</strong><small>ファイルを選択</small></span><input type="file" accept="audio/*" aria-label="音声ファイルを選択"></label>
+      </div>
+      <div class="controls">
+        <button id="load-sample" class="secondary">サンプルを入力</button>
+        <button id="clear-text" class="secondary">クリア</button>
+        <button id="generate" class="primary">解決案を考える</button>
+      </div>
+      <details class="audio-input">
+        <summary>音声ファイルを選ぶ（文字起こし機能は未実装）</summary>
+        <input type="file" accept="audio/*" aria-label="音声ファイルを選択">
+      </details>
+    </section>
+
+    <section id="results" class="panel results hidden" aria-live="polite">
+      <h2>解決案</h2>
+      <p id="result-summary" class="help"></p>
+      <div id="suggestion-list"></div>
+    </section>
+    <footer>ハイパー会話レコーダー</footer>
+  </main>
+  <script src="js/app.js"></script>
+</body>
+</html>
