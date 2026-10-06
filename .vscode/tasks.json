@@ -2,11 +2,11 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "Auto-Setup Environment",
+      "label": "Auto-Setup Environment with pyenv",
       "type": "shell",
-      "command": "[ ! -d .venv ] && python -m venv .venv && [ -f requirements.txt ] && .venv/bin/pip install -r requirements.txt || true",
+      "command": "[ ! -d .venv ] && ( [ -f .python-version ] && pyenv install -s $(cat .python-version) ); python -m venv .venv && [ -f requirements.txt ] && .venv/bin/pip install -r requirements.txt || true",
       "windows": {
-        "command": "if not exist .venv (python -m venv .venv) && (if exist requirements.txt (.venv\\Scripts\\pip install -r requirements.txt))"
+        "command": "if not exist .venv (if exist .python-version (for /f \"delims=\" %%i in (.python-version) do pyenv install -s %%i)) && if not exist .venv (python -m venv .venv) && (if exist requirements.txt (.venv\\Scripts\\pip install -r requirements.txt))"
       },
       "group": "none",
       "presentation": {
