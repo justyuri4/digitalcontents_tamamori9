@@ -1,0 +1,24 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Auto-Setup Environment with Homebrew and pyenv",
+      "type": "shell",
+      "command": "if [ ! -d .venv ]; then if [ -f .python-version ]; then pyenv install -s \"$(cat .python-version)\" || exit 1; fi; python -m venv .venv || exit 1; fi; if [ -f requirements.txt ]; then .venv/bin/python -m pip install -r requirements.txt; fi",
+      "windows": {
+        "command": "if not exist .venv (if exist .python-version (for /f \"delims=\" %%i in (.python-version) do pyenv install -s %%i)) && if not exist .venv (python -m venv .venv) && (if exist requirements.txt (.venv\\Scripts\\pip install -r requirements.txt))"
+      },
+      "osx": {
+        "command": "sh .vscode/setup_env.sh"
+      },
+      "group": "none",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "runOptions": {
+        "runOn": "folderOpen"
+      }
+    }
+  ]
+}
