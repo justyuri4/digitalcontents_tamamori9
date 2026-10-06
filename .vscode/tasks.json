@@ -1,0 +1,21 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Auto-Setup Environment",
+      "type": "shell",
+      "command": "[ ! -d .venv ] && python -m venv .venv && [ -f requirements.txt ] && .venv/bin/pip install -r requirements.txt || true",
+      "windows": {
+        "command": "if not exist .venv (python -m venv .venv) && (if exist requirements.txt (.venv\\Scripts\\pip install -r requirements.txt))"
+      },
+      "group": "none",
+      "presentation": {
+        "reveal": "silent",
+        "panel": "shared"
+      },
+      "runOptions": {
+        "runOn": "folderOpen"
+      }
+    }
+  ]
+}
