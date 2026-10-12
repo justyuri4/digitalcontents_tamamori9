@@ -19,6 +19,8 @@ textarea:focus { outline: 2px solid #9ab9e4; border-color: #527eaf; }
 .mic-icon, .file-icon { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 50%; background: #e8eef6; font-size: 17px; }
 .file-button { cursor: pointer; }
 .file-button input { display: none; }
+.file-button.disabled { cursor: not-allowed; opacity: .6; }
+.recording-status { min-height: 18px; margin: 9px 2px 0; color: #666; font-size: 12px; }
 .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; }
 button { min-height: 38px; padding: 8px 13px; border: 1px solid #bbb; border-radius: 5px; background: #fff; color: #222; font: inherit; font-size: 14px; cursor: pointer; }
 button:hover { background: #f2f4f6; }

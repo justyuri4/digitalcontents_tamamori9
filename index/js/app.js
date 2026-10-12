@@ -1,6 +1,87 @@
 const sample = `田中：新しい企画を来月から始めたいです。\n佐藤：準備の時間が足りるか心配です。\n井上：最初から全員に向けて始めなくてもよいと思います。\n田中：まずは小さく始めて、様子を見るのはどうでしょう？\n佐藤：それならできそうです。ただ、うまくいったかどうかを何で判断するか決めたいです。\n井上：参加した人の感想や、最後まで使ってくれた人数を見るのはどうでしょう。\n田中：では、今週中に対象と確認方法を決めましょう。`;
 const transcript = document.querySelector('#transcript');
 const results = document.querySelector('#results');
+const micButton = document.querySelector('#mic-button');
+const recordingStatus = document.querySelector('#recording-status');
+let currentStatus = 'stopped';
+let lastTranscriptId = null;
+let polling = false;
+
+function setRecordingStatus(status, error, droppedChunks = 0) {
+  currentStatus = status;
+  const labels = {
+    loading: ['Whisperモデルを読み込み中…', '読み込みを中止'],
+    recording: ['録音中です。認識した文章を入力欄に追加しています。', '録音を停止'],
+    stopping: ['録音と保存を終了しています…', '停止中'],
+    stopped: ['録音していません。', '録音を開始'],
+    error: [error ? `エラー：${error}` : '録音を開始できませんでした。', 'もう一度試す']
+  };
+  const [message, buttonLabel] = labels[status] || labels.stopped;
+  const droppedMessage = droppedChunks > 0 ? ` 音声区間を${droppedChunks}件処理できませんでした。` : '';
+  recordingStatus.textContent = message + droppedMessage;
+  micButton.querySelector('strong').textContent = buttonLabel;
+  micButton.disabled = status === 'stopping';
+}
+
+async function requestJson(url, options = {}) {
+  const response = await fetch(url, options);
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
+  return data;
+}
+
+async function refreshRecording() {
+  const state = await requestJson('/api/recording/status');
+  if (lastTranscriptId === null) lastTranscriptId = state.latest_id;
+  setRecordingStatus(state.status, state.error, state.dropped_chunks);
+
+  const data = await requestJson(`/api/transcripts?after_id=${lastTranscriptId}`);
+  for (const item of data.items) {
+    transcript.value += `${transcript.value && !transcript.value.endsWith('\n') ? '\n' : ''}${item.text}\n`;
+    lastTranscriptId = item.id;
+  }
+}
+
+micButton.addEventListener('click', async () => {
+  micButton.disabled = true;
+  try {
+    if (currentStatus === 'recording' || currentStatus === 'loading') {
+      const data = await requestJson('/api/recording/stop', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+      });
+      setRecordingStatus(data.status);
+    } else {
+      const data = await requestJson('/api/recording/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+      });
+      lastTranscriptId = data.after_id;
+      setRecordingStatus(data.status);
+    }
+  } catch (error) {
+    setRecordingStatus('error', error.message);
+  } finally {
+    micButton.disabled = false;
+  }
+});
+
+async function pollApi() {
+  if (polling) return;
+  polling = true;
+  try {
+    await refreshRecording();
+  } catch (error) {
+    recordingStatus.textContent = `APIに接続できません。python app.py で起動してください。(${error.message})`;
+  } finally {
+    polling = false;
+  }
+}
+
+pollApi();
+window.setInterval(pollApi, 1200);
 
 document.querySelector('#load-sample').addEventListener('click', () => {
   transcript.value = sample;
