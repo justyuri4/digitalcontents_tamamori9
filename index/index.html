@@ -18,9 +18,10 @@
       <p class="help">音声を入力し、必要なら変更を加えてください。</p>
       <textarea id="transcript" placeholder="例：\n田中：新しい企画を来月から始めたいです。\n佐藤：準備の時間が足りるか心配です。\n田中：まずは小さく始めて、様子を見るのはどうでしょう？"></textarea>
       <div class="voice-inputs">
-        <button class="voice-button" type="button"><span class="mic-icon">🎙</span><span><strong>マイクで入力</strong><small>クリックして音声入力</small></span></button>
-        <label class="file-button"><span class="file-icon">♫</span><span><strong>音声ファイル</strong><small>ファイルを選択</small></span><input type="file" accept="audio/*" aria-label="音声ファイルを選択"></label>
+        <button class="voice-button" id="mic-button" type="button"><span class="mic-icon">🎙</span><span><strong>録音を開始</strong><small>このMacのマイクを使用</small></span></button>
+        <label class="file-button disabled"><span class="file-icon">♫</span><span><strong>音声ファイル</strong><small>未対応</small></span><input type="file" accept="audio/*" aria-label="音声ファイルを選択" disabled></label>
       </div>
+      <p id="recording-status" class="recording-status" aria-live="polite">サーバーに接続しています…</p>
       <div class="controls">
         <button id="load-sample" class="secondary">サンプルを入力</button>
         <button id="clear-text" class="secondary">クリア</button>
