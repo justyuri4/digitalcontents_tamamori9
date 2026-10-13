@@ -1,6 +1,6 @@
 * { box-sizing: border-box; }
 body { margin: 0; background: #f4f5f7; color: #222; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans JP", sans-serif; font-size: 15px; }
-.page { width: min(720px, calc(100% - 32px)); margin: 48px auto; }
+.page { width: min(1040px, calc(100% - 32px)); margin: 48px auto; }
 .page-header { margin-bottom: 26px; }
 .project-label { margin: 0 0 8px; color: #666; font-size: 13px; }
 h1 { margin: 0; font-size: 27px; font-weight: 650; }
@@ -10,6 +10,10 @@ h2 { margin: 0; font-size: 18px; }
 .help { margin: 7px 0 13px; color: #666; font-size: 13px; }
 textarea { display: block; width: 100%; min-height: 210px; padding: 12px; resize: vertical; border: 1px solid #bbb; border-radius: 5px; font: inherit; line-height: 1.7; }
 textarea:focus { outline: 2px solid #9ab9e4; border-color: #527eaf; }
+.conversation-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.conversation-column h3 { margin: 0 0 8px; color: #4e5e70; font-size: 14px; font-weight: 600; }
+.conversation-column textarea { min-height: 260px; border-color: #d4dbe4; border-radius: 8px; }
+#gpt-response { border-color: #d8e2ef; background: #f5f8fc; color: #394b60; }
 .voice-inputs { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 12px; }
 .voice-button, .file-button { min-height: 58px; display: flex; align-items: center; gap: 11px; padding: 9px 12px; border: 1px solid #c9d3df; border-radius: 6px; background: #f8fafc; text-align: left; }
 .voice-button:hover, .file-button:hover { background: #f0f5fa; }
@@ -36,4 +40,4 @@ button:hover { background: #f2f4f6; }
 .suggestion .next-step { margin-top: 8px; color: #555; font-size: 13px; }
 .hidden { display: none; }
 footer { padding: 8px 0 24px; color: #777; font-size: 12px; }
-@media (max-width: 520px) { .page { margin-top: 28px; } .panel { padding: 17px; } h1 { font-size: 24px; } .primary { margin-left: 0; width: 100%; } .voice-inputs { grid-template-columns: 1fr; } }
+@media (max-width: 700px) { .page { margin-top: 28px; } .panel { padding: 17px; } h1 { font-size: 24px; } .primary { margin-left: 0; width: 100%; } .voice-inputs, .conversation-columns { grid-template-columns: 1fr; } }
