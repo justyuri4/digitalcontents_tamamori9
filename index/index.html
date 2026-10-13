@@ -16,7 +16,16 @@
     <section class="panel" aria-labelledby="input-heading">
       <h2 id="input-heading">会話の内容</h2>
       <p class="help">音声を入力し、必要なら変更を加えてください。</p>
-      <textarea id="transcript" placeholder="例：\n田中：新しい企画を来月から始めたいです。\n佐藤：準備の時間が足りるか心配です。\n田中：まずは小さく始めて、様子を見るのはどうでしょう？"></textarea>
+      <div class="conversation-columns">
+        <section class="conversation-column" aria-labelledby="transcript-heading">
+          <h3 id="transcript-heading">文字起こし</h3>
+          <textarea id="transcript" placeholder="例：\n田中：新しい企画を来月から始めたいです。\n佐藤：準備の時間が足りるか心配です。\n田中：まずは小さく始めて、様子を見るのはどうでしょう？"></textarea>
+        </section>
+        <section class="conversation-column" aria-labelledby="gpt-response-heading">
+          <h3 id="gpt-response-heading">要約</h3>
+          <textarea id="gpt-response" placeholder="要約がここに表示されます。" readonly aria-label="要約"></textarea>
+        </section>
+      </div>
       <div class="voice-inputs">
         <button class="voice-button" id="mic-button" type="button"><span class="mic-icon">🎙</span><span><strong>録音を開始</strong><small>このMacのマイクを使用</small></span></button>
         <label class="file-button"><span class="file-icon">♫</span><span><strong>音声ファイル</strong><small>WAV・MP3・M4Aなど / 25MBまで</small></span><input id="audio-file" type="file" accept="audio/*,video/mp4,video/webm" aria-label="音声ファイルを選択"></label>
