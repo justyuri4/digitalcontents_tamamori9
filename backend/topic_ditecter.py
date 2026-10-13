@@ -1,100 +1,217 @@
-import numpy as np
+import argparse
+import re
+from pathlib import Path
+
 from sentence_transformers import SentenceTransformer
+from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
+
+WORD_SIMILARITY_WEIGHT = 0.25
+DEMONSTRATIVE_REFERENCE_PATTERN = re.compile(
+  r"(?:あそこ|こちら|そちら|あちら|これ|それ|あれ|ここ|そこ|この|その|あの|"
+  r"こんな|そんな|あんな|こういう|そういう|ああいう)(?!ぞれ|ろ)"
+)
 
 
 class TopicShiftDetector:
-
-  def __init__(
-      self, model_name="intfloat/multilingual-e5-small"
-  ):  # 軽量で日本語の文脈理解に優れたモデル
+  def __init__(self, model_name="intfloat/multilingual-e5-small"):
     print(f"モデルをロード中: {model_name}...")
     self.model = SentenceTransformer(model_name)
 
-  def compare(self, first_message, second_message):
-    embeddings = self.model.encode(
-        [first_message, second_message], show_progress_bar=False
+  @staticmethod
+  def _weighted_similarity(similarities):
+    total_weight = sum(window_size for window_size, _ in similarities)
+    return sum(
+      similarity * window_size
+      for window_size, similarity in similarities
+    ) / total_weight
+
+  def _tokenize_content(self, text):
+    return [
+      token
+      for token in self.model.tokenizer.tokenize(text)
+      if token.strip("▁").isalnum()
+    ]
+
+  @staticmethod
+  def has_demonstrative_reference(text):
+    return DEMONSTRATIVE_REFERENCE_PATTERN.search(text) is not None
+
+  def _fit_word_vectorizer(self, messages):
+    vectorizer = TfidfVectorizer(
+      tokenizer=self._tokenize_content,
+      token_pattern=None,
+      lowercase=False,
     )
-    return float(cosine_similarity([embeddings[0]], [embeddings[1]])[0][0])
+    try:
+      vectorizer.fit(messages)
+    except ValueError as error:
+      if "empty vocabulary" not in str(error):
+        raise
+      return None
+    return vectorizer
+
+  @staticmethod
+  def _word_similarity(vectorizer, left, right):
+    if vectorizer is None:
+      return None
+    vectors = vectorizer.transform([left, right])
+    return float(cosine_similarity(vectors[0], vectors[1])[0][0])
+
+  @staticmethod
+  def _combine_similarities(semantic_similarity, word_similarity):
+    if word_similarity is None:
+      return semantic_similarity
+    return (
+      semantic_similarity * (1 - WORD_SIMILARITY_WEIGHT)
+      + word_similarity * WORD_SIMILARITY_WEIGHT
+    )
 
   def compare_context(self, context_messages, next_message):
-    context = " ".join(message.strip() for message in context_messages[-3:] if message.strip())
-    if not context or not next_message.strip():
+    all_context_messages = [
+      message.strip() for message in context_messages if message.strip()
+    ]
+    recent_messages = all_context_messages[-4:]
+    next_message = next_message.strip()
+    if not recent_messages or not next_message:
       raise ValueError("比較には文脈と次の発言が必要です")
-    return self.compare(context, next_message.strip())
 
-  def detect_shifts(self, messages, threshold=0.88):
-    """会話のメッセージリストを受け取り、話題が変わったインデックスを検知する
+    windows = [
+      (window_size, "\n".join(recent_messages[-window_size:]))
+      for window_size in range(1, len(recent_messages) + 1)
+    ]
+    vectorizer = self._fit_word_vectorizer(
+      [*all_context_messages, next_message]
+    )
+    embeddings = self.model.encode(
+      [text for _, text in windows] + [next_message],
+      show_progress_bar=False,
+    )
+    similarities = []
+    for (window_size, context), embedding in zip(windows, embeddings[:-1]):
+      semantic_similarity = float(
+        cosine_similarity([embedding], [embeddings[-1]])[0][0]
+      )
+      word_similarity = self._word_similarity(
+        vectorizer, context, next_message
+      )
+      similarities.append(
+        (
+          window_size,
+          self._combine_similarities(semantic_similarity, word_similarity),
+        )
+      )
+    return self._weighted_similarity(similarities)
 
-    :param messages: 会話の文字列のリスト
-    :param threshold:
-    類似度の閾値（0〜1）。これより下がると話題が変わったと判定
-    """
+  def detect_shifts(self, messages, threshold=0.74):
     if len(messages) < 2:
       return []
 
-    comparison_pairs = [
-        (" ".join(messages[max(0, index - 3):index]), messages[index])
-        for index in range(1, len(messages))
-    ]
-    comparison_texts = [
-        text for context, next_message in comparison_pairs
-        for text in (context, next_message)
-    ]
-    embeddings = self.model.encode(comparison_texts, show_progress_bar=False)
-
     shift_indices = []
-    print("\n--- 直近3文と次の発言の類似度チェック ---")
-
-    for pair_index, (context, next_message) in enumerate(comparison_pairs):
-      embedding_index = pair_index * 2
-      sim = cosine_similarity(
-          [embeddings[embedding_index]], [embeddings[embedding_index + 1]]
-      )[0][0]
-
-      print(f"[文脈: {context}] と [次の発言: {next_message}]")
-      print(f"  -> 類似度: {sim:.3f}")
-
-      # 類似度が閾値を下回ったら「話題の変わり目」とみなす
-      if sim < threshold:
-        shift_indices.append(pair_index + 1)
-        print(
-            "  -> ⚠️ 【話題が切り替わりました】（閾値"
-            f" {threshold} を下回りました）"
+    topic_start = 0
+    print("\n--- 1〜4行の文脈と次の発言の類似度チェック ---")
+    for index in range(1, len(messages)):
+      next_message = messages[index]
+      context_messages = messages[max(topic_start, index - 4):index]
+      windows = [
+        (window_size, "\n".join(context_messages[-window_size:]))
+        for window_size in range(1, len(context_messages) + 1)
+      ]
+      vectorizer = self._fit_word_vectorizer(
+        [*messages[topic_start:index], next_message]
+      )
+      embeddings = self.model.encode(
+        [text for _, text in windows] + [next_message],
+        show_progress_bar=False,
+      )
+      next_embedding = embeddings[-1]
+      window_scores = []
+      for (window_size, context), window_embedding in zip(
+        windows, embeddings[:-1]
+      ):
+        semantic_similarity = float(
+          cosine_similarity([window_embedding], [next_embedding])[0][0]
         )
+        word_similarity = self._word_similarity(
+          vectorizer, context, next_message
+        )
+        combined_window_similarity = self._combine_similarities(
+          semantic_similarity, word_similarity
+        )
+        window_scores.append(
+          (window_size, semantic_similarity, word_similarity, combined_window_similarity)
+        )
+      combined_similarity = self._weighted_similarity(
+        [
+          (window_size, combined_window_similarity)
+          for window_size, _, _, combined_window_similarity in window_scores
+        ]
+      )
+      context = windows[-1][1]
+      print(f"[文脈: {context}] と [次の発言: {next_message}]")
+      for window_size, semantic_similarity, word_similarity, combined_window_similarity in window_scores:
+        weight = window_size
+        word_score = "未算出" if word_similarity is None else f"{word_similarity:.3f}"
+        print(
+          f"  -> {window_size}行: 意味 {semantic_similarity:.3f}, "
+          f"単語 {word_score}, 合成 {combined_window_similarity:.3f} "
+          f"(重み {weight})"
+        )
+      print(f"  -> 加重総合類似度: {combined_similarity:.3f}")
+
+      has_reference = self.has_demonstrative_reference(next_message)
+      if has_reference:
+        print("  -> 指示語があるため話題継続として判定")
+      if combined_similarity < threshold and not has_reference:
+        shift_indices.append(index)
+        print(
+            "  -> 話題が切り替わりました（しきい値 "
+            f"{threshold} 未満）"
+        )
+        topic_start = index
 
     return shift_indices
 
 
-# ==========================================
-# 実行テスト用コード
-# ==========================================
-if __name__ == "__main__":
-  # サンプルの会話ログ
-  # （前半：プログラミング、中盤：夕飯、後半：天気）
-  chat_log = [
-      "Pythonでベクトル検索のスクリプトを書いています。",
-      "ライブラリは何を使うのがおすすめですか？",
-      "sentence-transformersが一番手軽でローカルでも軽快に動きます。",
-      "なるほど、ありがとう！ところで、今夜の夕飯は何にしようかな。",
-      "カレーライスか、それともラーメンがいいですかね。",
-      "ラーメンもいいですね。あ、そういえば明日の天気予報って雨でしたっけ？",
-      "明日の名古屋は晴れの予報ですよ。",
+SAMPLE_FILE = Path(__file__).with_name("sample_topic_conversation.txt")
+
+
+def main():
+  parser = argparse.ArgumentParser(
+      description="会議サンプルで話題の切り替わりを検出します。"
+  )
+  parser.add_argument(
+      "--threshold",
+      type=float,
+      default=0.68,
+      help="話題切り替わりと判定する類似度のしきい値（既定値: 0.68）",
+  )
+  args = parser.parse_args()
+
+  messages = [
+      line.strip()
+      for line in SAMPLE_FILE.read_text(encoding="utf-8").splitlines()
+      if line.strip()
   ]
+  if not messages:
+    parser.error(f"テスト用会話が空です: {SAMPLE_FILE}")
 
-  # 検出器の初期化
   detector = TopicShiftDetector()
+  shift_indices = detector.detect_shifts(
+      messages, threshold=args.threshold
+  )
 
-  # 話題の変わり目を検知（閾値はデータの性質に合わせて 0.6 〜 0.7 辺りで微調整してください）
-  shifts = detector.detect_shifts(chat_log, threshold=0.65)
+  print("\n=== 検出された話題 ===")
+  boundaries = [0, *shift_indices, len(messages)]
+  for topic_number, (start, end) in enumerate(
+      zip(boundaries, boundaries[1:]), start=1
+  ):
+    print(f"\n[話題 {topic_number}]")
+    for message in messages[start:end]:
+      print(f"- {message}")
 
-  print("\n=== 完結したトピックごとの分割結果 ===")
-  start_idx = 0
-  for shift_idx in shifts:
-    topic = chat_log[start_idx:shift_idx]
-    print(f"\n[まとまったトピック]: {topic}")
-    # ★ここに「ChatGPT APIへこのトピックを投げて要約させる処理」を組み込めます
-    start_idx = shift_idx
+  print(f"\n切り替わり位置（次の発言の番号）: {shift_indices}")
 
-  # 最後のトピック
-  print(f"\n[まとまったトピック]: {chat_log[start_idx:]}")
+
+if __name__ == "__main__":
+  main()

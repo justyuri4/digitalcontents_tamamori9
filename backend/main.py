@@ -4,8 +4,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from functools import lru_cache
-from ai_service import get_chatgpt_response
-from config import ANALYSIS_PROMPT_TEMPLATE
+from ai_service import ANALYSIS_PROMPT_TEMPLATE, get_chatgpt_response
 from models import (
   AnalyzeRequest,
   AnalyzeResponse,
@@ -34,8 +33,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 【重要】staticフォルダの中身を公開する設定
-app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
+# フロントエンドのCSSとJavaScriptを公開
+app.mount("/css", StaticFiles(directory=FRONTEND_DIR / "css"), name="css")
+app.mount("/js", StaticFiles(directory=FRONTEND_DIR / "js"), name="js")
 
 
 # 1. ルート（http://127.0.0.1:8080/）にアクセスされたら HTML を返す
@@ -86,9 +86,22 @@ def compare_recent_messages(request: SimilarityRequest):
   if not context_messages or not current_message:
     raise HTTPException(status_code=422, detail="比較する発言を2つ入力してください")
 
-  similarity = get_topic_detector().compare_context(context_messages, current_message)
+  detector = get_topic_detector()
+  similarity = detector.compare_context(
+      context_messages, current_message
+  )
   return SimilarityResponse(
       similarity=similarity,
+      context_similarity=similarity,
       threshold=request.threshold,
-      topic_changed=similarity < request.threshold,
+      topic_changed=(
+        similarity < request.threshold
+        and not detector.has_demonstrative_reference(current_message)
+      ),
   )
+
+
+if __name__ == "__main__":
+  import uvicorn
+
+  uvicorn.run(app, host="127.0.0.1", port=8080)
