@@ -21,7 +21,7 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-PythonはWhisperが互換性を明記している3.11を使います。`requirements.txt`ではWhisperを`20250625`、FastAPIを`0.143.0`、Uvicornを`0.54.0`に固定し、sounddeviceは0.5系、NumPyは1.xに制限しています。FastAPIとUvicornでHTMLの配信とJSON APIを実行します。音声を扱うためにFFmpegが必要です。PyTorchなどの依存関係もpipでインストールされます。初回のライブラリ導入とWhisperモデル取得にはインターネット接続が必要ですが、録音と文字起こしの実行時に音声を外部APIへ送りません。
+PythonはWhisperが互換性を明記している3.11を使います。`requirements.txt`ではWhisperを`20250625`、FastAPIを`0.143.0`、Uvicornを`0.54.0`、アップロード処理用の`python-multipart`を`0.0.32`に固定し、sounddeviceは0.5系、NumPyは1.xに制限しています。FastAPIとUvicornでHTMLの配信とJSON APIを実行します。音声を扱うためにFFmpegが必要です。PyTorchなどの依存関係もpipでインストールされます。初回のライブラリ導入とWhisperモデル取得にはインターネット接続が必要ですが、録音と文字起こしの実行時に音声を外部APIへ送りません。
 
 ## VS Codeと仮想環境
 
@@ -84,20 +84,21 @@ sqlite3 conversation.db 'SELECT id, timestamp, text, processed FROM transcripts 
 
 ## Web連携とJSON API
 
-HTMLとPythonの音声処理は、Mac上で動作するFastAPIを通して接続しています。HTMLからJSONで録音開始・停止を送り、Pythonから状態や文字起こし結果をJSONで受け取ります。録音、音声認識、SQLite保存はPython側で行います。
+HTMLとPythonの音声処理は、Mac上で動作するFastAPIを通して接続しています。HTMLからJSONで録音開始・停止を送り、Pythonから状態や文字起こし結果をJSONで受け取ります。音声ファイル本体はアップロード用の`multipart/form-data`で送ります。録音、音声認識、SQLite保存はPython側で行います。
 
-通信の流れは、**HTML（JavaScript）→ FastAPIへJSONリクエスト → Pythonで録音・Whisper文字起こし・SQLite保存 → FastAPIからJSONレスポンス → HTMLに表示**です。画面も同じFastAPIアプリから配信するため、ブラウザーからローカルAPIへ直接アクセスできます。
+マイク入力は、**HTML（JavaScript）→ FastAPIへJSONリクエスト → Pythonで録音・Whisper文字起こし・SQLite保存 → FastAPIからJSONレスポンス → HTMLに表示**です。音声ファイルは、**HTML → FastAPIへファイル送信 → ローカルWhisper → SQLite保存 → 結果をJSONで返す**流れです。画面も同じFastAPIアプリから配信するため、ブラウザーからローカルAPIへ直接アクセスできます。アップロードした音声は一時ファイルで処理した後に削除し、文字起こし結果だけを保存します。
 
-APIの形は実装時に確定します。現時点の案は次のとおりです。
+現在のAPIは次のとおりです。
 
-| 用途 | HTTP API案 | JSONの例 |
+| 用途 | HTTP API | リクエスト / 応答 |
 | --- | --- | --- |
 | 録音開始 | `POST /api/recording/start` | リクエスト `{}`、応答 `{"status":"loading","after_id":12}` |
 | 録音停止 | `POST /api/recording/stop` | リクエスト `{}`、応答 `{"status":"stopped"}` |
 | 録音状態 | `GET /api/recording/status` | 応答 `{"status":"recording","error":null,"dropped_chunks":0,"latest_id":13}` |
 | 新しい文字起こし取得 | `GET /api/transcripts?after_id=12` | 応答 `{"items":[{"id":13,"timestamp":"...","text":"...","processed":0}]}` |
+| 音声ファイル文字起こし | `POST /api/transcripts/upload` | `multipart/form-data`で`file`を送信。応答例 `{"status":"saved","text":"...","saved":true}` |
 
-録音開始ボタンでマイク入力を開始し、画面は約1.2秒ごとに状態と新しい文字起こしを取得します。音声ファイル入力はまだ未対応です。
+録音開始ボタンでマイク入力を開始し、画面は約1.2秒ごとに状態と新しい文字起こしを取得します。音声ファイル入力はWAV、MP3、M4A、MP4、AAC、FLAC、OGG、OPUS、WebMに対応し、サイズは25MBまでです。文字起こし結果はマイク入力と同じ`transcripts`テーブルへ保存します。
 
 ## トラブルシューティング
 
