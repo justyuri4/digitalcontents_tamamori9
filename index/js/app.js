@@ -3,6 +3,8 @@ const transcript = document.querySelector('#transcript');
 const results = document.querySelector('#results');
 const micButton = document.querySelector('#mic-button');
 const recordingStatus = document.querySelector('#recording-status');
+const audioFile = document.querySelector('#audio-file');
+const fileStatus = document.querySelector('#file-status');
 let currentStatus = 'stopped';
 let lastTranscriptId = null;
 let polling = false;
@@ -65,6 +67,36 @@ micButton.addEventListener('click', async () => {
     setRecordingStatus('error', error.message);
   } finally {
     micButton.disabled = false;
+  }
+});
+
+audioFile.addEventListener('change', async () => {
+  const file = audioFile.files[0];
+  if (!file) return;
+  if (file.size > 25 * 1024 * 1024) {
+    fileStatus.textContent = '音声ファイルは25MB以下にしてください。';
+    audioFile.value = '';
+    return;
+  }
+
+  const formData = new FormData();
+  formData.append('file', file);
+  audioFile.disabled = true;
+  fileStatus.textContent = `${file.name}を文字起こし中です…`;
+  try {
+    const data = await requestJson('/api/transcripts/upload', {
+      method: 'POST',
+      body: formData
+    });
+    fileStatus.textContent = data.saved
+      ? `${file.name}の文字起こしを保存しました。`
+      : '文字起こし結果が空だったため、保存しませんでした。';
+    await pollApi();
+  } catch (error) {
+    fileStatus.textContent = `音声ファイルを処理できませんでした：${error.message}`;
+  } finally {
+    audioFile.disabled = false;
+    audioFile.value = '';
   }
 });
 

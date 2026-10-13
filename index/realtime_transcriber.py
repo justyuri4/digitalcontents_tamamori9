@@ -19,6 +19,17 @@ SAMPLE_RATE = 16_000
 CHUNK_SECONDS = 5
 SILENCE_THRESHOLD = 0.01
 MAX_QUEUED_CHUNKS = 20
+_MODEL_CACHE = {}
+_MODEL_LOCK = threading.Lock()
+_TRANSCRIPTION_LOCK = threading.Lock()
+
+
+def load_whisper_model(model_name: str):
+    """同じモデルをマイク録音とファイル入力で共有します。"""
+    with _MODEL_LOCK:
+        if model_name not in _MODEL_CACHE:
+            _MODEL_CACHE[model_name] = whisper.load_model(model_name)
+        return _MODEL_CACHE[model_name]
 
 
 def initialize_database(database_path: Path = DATABASE_PATH) -> None:
@@ -46,14 +57,29 @@ def save_transcript(text: str, database_path: Path = DATABASE_PATH) -> None:
 
 def transcribe_audio(model, audio: np.ndarray) -> str:
     """音声配列を日本語指定でローカルWhisperに渡します。"""
-    result = model.transcribe(
-        audio,
-        language="ja",
-        task="transcribe",
-        fp16=False,
-        verbose=False,
-        condition_on_previous_text=False,
-    )
+    with _TRANSCRIPTION_LOCK:
+        result = model.transcribe(
+            audio,
+            language="ja",
+            task="transcribe",
+            fp16=False,
+            verbose=False,
+            condition_on_previous_text=False,
+        )
+    return result["text"].strip()
+
+
+def transcribe_audio_file(model, audio_path: Path) -> str:
+    """音声ファイルをローカルWhisperで日本語文字起こしします。"""
+    with _TRANSCRIPTION_LOCK:
+        result = model.transcribe(
+            str(audio_path),
+            language="ja",
+            task="transcribe",
+            fp16=False,
+            verbose=False,
+            condition_on_previous_text=False,
+        )
     return result["text"].strip()
 
 
@@ -168,7 +194,7 @@ class TranscriptionService:
 
         try:
             print(f"Whisperモデル '{self.model_name}' を読み込みます…", flush=True)
-            model = whisper.load_model(self.model_name)
+            model = load_whisper_model(self.model_name)
             if self._stop_event.is_set():
                 self._set_status("stopped")
                 return
