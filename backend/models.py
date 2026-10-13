@@ -10,21 +10,8 @@ class ChatResponse(BaseModel):
 
 
 class AnalyzeRequest(BaseModel):
-  transcript: str
+  transcript: str = ""
   threshold: float = Field(default=0.74, ge=0, le=1)
-
-
-class SimilarityRequest(BaseModel):
-  context_messages: list[str] = Field(min_length=1)
-  current_message: str
-  threshold: float = Field(default=0.74, ge=0, le=1)
-
-
-class SimilarityResponse(BaseModel):
-  similarity: float
-  context_similarity: float
-  threshold: float
-  topic_changed: bool
 
 
 class TopicAnalysis(BaseModel):
