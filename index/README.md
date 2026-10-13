@@ -97,8 +97,10 @@ HTMLとPythonの音声処理は、Mac上で動作するFastAPIを通して接続
 | 録音状態 | `GET /api/recording/status` | 応答 `{"status":"recording","error":null,"dropped_chunks":0,"latest_id":13}` |
 | 新しい文字起こし取得 | `GET /api/transcripts?after_id=12` | 応答 `{"items":[{"id":13,"timestamp":"...","text":"...","processed":0}]}` |
 | 音声ファイル文字起こし | `POST /api/transcripts/upload` | `multipart/form-data`で`file`を送信。応答例 `{"status":"saved","text":"...","saved":true}` |
+| ChatGPT話題分析取得 | `GET /api/analyses?after_id=0` | 応答 `{"items":[{"id":1,"timestamp":"...","topic":"...","analysis":"ChatGPTの出力"}]}` |
 
 録音開始ボタンでマイク入力を開始し、画面は約1.2秒ごとに状態と新しい文字起こしを取得します。音声ファイル入力はWAV、MP3、M4A、MP4、AAC、FLAC、OGG、OPUS、WebMに対応し、サイズは25MBまでです。文字起こし結果はマイク入力と同じ`transcripts`テーブルへ保存します。
+文字起こしはバックグラウンドで話題判定され、話題が切り替わった時と録音停止時にChatGPTへ送信されます。分析結果は`topic_analyses`テーブルへ保存され、画面と`/api/analyses`からJSONで取得できます。
 
 ## トラブルシューティング
 
