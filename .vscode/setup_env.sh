@@ -34,6 +34,10 @@ if ! command -v pyenv >/dev/null 2>&1; then
   brew install pyenv
 fi
 
+if ! command -v ffmpeg >/dev/null 2>&1; then
+  brew install ffmpeg
+fi
+
 python_version=$(tr -d '[:space:]' < .python-version)
 if [ -z "$python_version" ]; then
   printf '%s\n' ".python-version is empty." >&2
@@ -43,6 +47,12 @@ fi
 pyenv install -s "$python_version"
 if [ ! -x .venv/bin/python ]; then
   PYENV_VERSION="$python_version" pyenv exec python -m venv .venv
+fi
+
+current_python_version=$(.venv/bin/python -c 'import platform; print(platform.python_version())')
+if [ "$current_python_version" != "$python_version" ]; then
+  printf '%s\n' ".venv は Python $current_python_version です。.python-version の $python_version に合わせるには .venv を作り直してください。" >&2
+  exit 1
 fi
 
 if [ -f requirements.txt ]; then

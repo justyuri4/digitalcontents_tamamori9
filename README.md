@@ -18,6 +18,18 @@ x250032:小坂勇輝
 ・Webアプリ内でログ、話題や話した時間などで検索できるようにする
 ・話の声色などでスコアづけ(盛り上がった->はなまる,盛り上がらなかった->三角)
 
-仮想環境が変わる際pip freeze > を使ってください
-pip install requests
-pip freeze > requirements.txt
+依存ライブラリは `requirements.txt` で管理します。仮想環境の準備後、必要に応じて `python -m pip install -r requirements.txt` を実行してください。
+
+## 起動方法（macOS）
+
+プロジェクトのルートで仮想環境を有効にしてから、`backend` フォルダーでサーバーを起動します。
+
+```bash
+source .venv/bin/activate
+cd backend
+python main.py
+```
+
+ブラウザーで <http://127.0.0.1:8080> を開きます。音声APIも同じサーバーを使います。`index/getvoice.py` を直接起動する必要はありません。
+
+サーバーを終了するときは、起動したターミナルで `Ctrl+C` を押します。
