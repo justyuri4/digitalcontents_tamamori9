@@ -1,10 +1,13 @@
+import asyncio
+import sys
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from functools import lru_cache
-from ai_service import ANALYSIS_PROMPT_TEMPLATE, get_chatgpt_response
 from models import (
   AnalyzeRequest,
   AnalyzeResponse,
@@ -16,8 +19,21 @@ from models import (
 )
 from topic_ditecter import TopicShiftDetector
 
-app = FastAPI()
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "index"
+if str(FRONTEND_DIR) not in sys.path:
+  sys.path.insert(0, str(FRONTEND_DIR))
+
+# main.pyがサーバーを起動し、index側のgetvoice.pyを同じサーバーに組み込みます。
+import getvoice
+
+
+@asynccontextmanager
+async def lifespan(_app):
+  yield
+  await asyncio.to_thread(getvoice.service.stop)
+
+
+app = FastAPI(lifespan=lifespan)
 
 
 @lru_cache(maxsize=1)
@@ -36,6 +52,7 @@ app.add_middleware(
 # フロントエンドのCSSとJavaScriptを公開
 app.mount("/css", StaticFiles(directory=FRONTEND_DIR / "css"), name="css")
 app.mount("/js", StaticFiles(directory=FRONTEND_DIR / "js"), name="js")
+
 
 
 # 1. ルート（http://127.0.0.1:8080/）にアクセスされたら HTML を返す
@@ -64,6 +81,12 @@ def analyze_transcript(request: AnalyzeRequest):
   messages = [line.strip() for line in request.transcript.splitlines() if line.strip()]
   if not messages:
     raise HTTPException(status_code=422, detail="会話の内容を入力してください")
+
+  # APIキーは要約を使うときに読み込み、音声サーバーの起動には要求しません。
+  try:
+    from ai_service import ANALYSIS_PROMPT_TEMPLATE, get_chatgpt_response
+  except ValueError as error:
+    raise HTTPException(status_code=503, detail=str(error)) from error
 
   shift_indices = get_topic_detector().detect_shifts(messages, request.threshold)
   boundaries = [0, *shift_indices, len(messages)]
@@ -100,6 +123,9 @@ def compare_recent_messages(request: SimilarityRequest):
       ),
   )
 
+
+# 既存のAPIにないパスはgetvoice.py側で処理します（同じ8080番ポート）。
+app.mount("/", getvoice.app)
 
 if __name__ == "__main__":
   import uvicorn
