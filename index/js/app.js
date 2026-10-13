@@ -106,7 +106,7 @@ async function pollApi() {
   try {
     await refreshRecording();
   } catch (error) {
-    recordingStatus.textContent = `APIに接続できません。python app.py で起動してください。(${error.message})`;
+    recordingStatus.textContent = `APIに接続できません。backend/main.py を起動してください。(${error.message})`;
   } finally {
     polling = false;
   }

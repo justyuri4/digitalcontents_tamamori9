@@ -1,7 +1,10 @@
 fastapi
 numpy
+openai-whisper
 openai
 python-dotenv
+python-multipart
 scikit-learn
 sentence-transformers
+sounddevice
 uvicorn
