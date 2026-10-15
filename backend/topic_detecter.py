@@ -41,11 +41,11 @@ class TopicShiftDetector:
     if not self.current_topic:
       return None
 
-    topic = "\\n".join(self.current_topic)
+    topic = "\n".join(self.current_topic)
     self.current_topic = []
     self.topic_count += 1
 
-    print(f"\\n=== 話題 {self.topic_count} が終了しました ===")
+    print(f"\n=== 話題 {self.topic_count} が終了しました ===")
     print("【話題の内容】")
     print(topic)
 
@@ -159,8 +159,8 @@ class TopicShiftDetector:
           and not self.has_response_word(message)
       )
       if topic_changed:
-        completed_topic = "\n".join(self.current_topic)
-        self.current_topic = []
+        # 話題が変わった瞬間に割り込んで完了処理（＝イベント発火）を実行
+        completed_topic = self._complete_current_topic()
 
     self.current_topic.append(message)
     return completed_topic
