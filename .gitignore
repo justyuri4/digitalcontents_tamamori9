@@ -221,5 +221,21 @@ __marimo__/
 .streamlit/secrets.toml
 
 *.db
+<<<<<<< Updated upstream
+=======
+
+# Zsh compiled script + backup
+*.zwc
+*.zwc.old
+
+# Zsh completion-optimization dumpfiles
+*zcompdump*
+
+# Zsh history and plugin caches
+.zcalc_history
+.zinit_lstupd
+._zinit
+.directory_history
+>>>>>>> Stashed changes
 /index/models/sherpa-onnx/
 
