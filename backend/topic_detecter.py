@@ -6,8 +6,8 @@ from sentence_transformers import SentenceTransformer
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
-WORD_SIMILARITY_WEIGHT = 0.25
-DEFAULT_THRESHOLD = 0.69  # 委託先が持つべき正しいデフォルトのコンフィグ
+WORD_SIMILARITY_WEIGHT = 0.18
+DEFAULT_THRESHOLD = 0.745  # 委託先が持つべき正しいデフォルトのコンフィグ
 DEMONSTRATIVE_REFERENCE_PATTERN = re.compile(
     r"(?:あそこ|こちら|そちら|あちら|これ|それ|あれ|ここ|そこ|この|その|あの|"
     r"こんな|そんな|あんな|こういう|そういう|ああいう)(?!ぞれ|ろ)"
@@ -48,7 +48,6 @@ class TopicShiftDetector:
     print(f"\\n=== 話題 {self.topic_count} が終了しました ===")
     print("【話題の内容】")
     print(topic)
-    print("=== 話題確定イベントを通知します ===")
 
     if self.on_topic_completed is not None:
       self.on_topic_completed(topic)
@@ -160,7 +159,6 @@ class TopicShiftDetector:
           and not self.has_response_word(message)
       )
       if topic_changed:
-        completed_topic = self._complete_current_topic()
         completed_topic = "\n".join(self.current_topic)
         self.current_topic = []
 
