@@ -1,35 +1,108 @@
-"""ローカルWhisperによる音声文字起こしとSQLite保存。"""
+"""ローカルWhisperXによる音声文字起こしとSQLite保存。"""
 
 import argparse
 import queue
+import shutil
 import sqlite3
 import sys
+import tarfile
+import tempfile
 import threading
 import time
 from datetime import datetime
 from pathlib import Path
+from urllib.request import urlretrieve
 
 import numpy as np
 import sounddevice as sd
-import whisper
+import sherpa_onnx
+import whisperx
 
 
 DATABASE_PATH = Path(__file__).with_name("conversation.db")
+MODEL_DIRECTORY = Path(__file__).with_name("models") / "sherpa-onnx"
 SAMPLE_RATE = 16_000
-CHUNK_SECONDS = 5
+CHUNK_SECONDS = 10
 SILENCE_THRESHOLD = 0.01
 MAX_QUEUED_CHUNKS = 20
+SEGMENTATION_URL = (
+    "https://github.com/k2-fsa/sherpa-onnx/releases/download/"
+    "speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2"
+)
+EMBEDDING_URL = (
+    "https://github.com/k2-fsa/sherpa-onnx/releases/download/"
+    "speaker-recongition-models/3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx"
+)
+SEGMENTATION_MODEL = MODEL_DIRECTORY / "sherpa-onnx-pyannote-segmentation-3-0" / "model.int8.onnx"
+EMBEDDING_MODEL = MODEL_DIRECTORY / "3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx"
 _MODEL_CACHE = {}
 _MODEL_LOCK = threading.Lock()
 _TRANSCRIPTION_LOCK = threading.Lock()
+_DIARIZATION_LOCK = threading.Lock()
+_DIARIZATION_MODEL = None
 
 
 def load_whisper_model(model_name: str):
-    """同じモデルをマイク録音とファイル入力で共有します。"""
+    """WhisperXの日本語モデルをMacのCPU上で一度だけ読み込みます。"""
     with _MODEL_LOCK:
         if model_name not in _MODEL_CACHE:
-            _MODEL_CACHE[model_name] = whisper.load_model(model_name)
+            _MODEL_CACHE[model_name] = whisperx.load_model(
+                model_name,
+                device="cpu",
+                compute_type="int8",
+                language="ja",
+            )
         return _MODEL_CACHE[model_name]
+
+
+def _download_diarization_models() -> None:
+    """公式配布先からSherpa-ONNXのモデルを初回だけ取得します。"""
+    MODEL_DIRECTORY.mkdir(parents=True, exist_ok=True)
+    if not SEGMENTATION_MODEL.exists():
+        archive_path = MODEL_DIRECTORY / "segmentation-model.tar.bz2"
+        try:
+            urlretrieve(SEGMENTATION_URL, archive_path)
+            with tarfile.open(archive_path, "r:bz2") as archive:
+                archive.extractall(MODEL_DIRECTORY, filter="data")
+        finally:
+            archive_path.unlink(missing_ok=True)
+
+    if not EMBEDDING_MODEL.exists():
+        temporary_model = EMBEDDING_MODEL.with_suffix(".onnx.download")
+        try:
+            urlretrieve(EMBEDDING_URL, temporary_model)
+            temporary_model.replace(EMBEDDING_MODEL)
+        finally:
+            temporary_model.unlink(missing_ok=True)
+
+
+def load_diarization_model():
+    """Sherpa-ONNXの話者分離モデルを一度だけ読み込みます。"""
+    global _DIARIZATION_MODEL
+    with _DIARIZATION_LOCK:
+        if _DIARIZATION_MODEL is None:
+            _download_diarization_models()
+            config = sherpa_onnx.OfflineSpeakerDiarizationConfig(
+                segmentation=sherpa_onnx.OfflineSpeakerSegmentationModelConfig(
+                    pyannote=sherpa_onnx.OfflineSpeakerSegmentationPyannoteModelConfig(
+                        model=str(SEGMENTATION_MODEL),
+                        window_shift_ratio=0.1,
+                    )
+                ),
+                embedding=sherpa_onnx.SpeakerEmbeddingExtractorConfig(
+                    model=str(EMBEDDING_MODEL)
+                ),
+                clustering=sherpa_onnx.FastClusteringConfig(
+                    num_clusters=-1,
+                    threshold=0.5,
+                ),
+                min_duration_on=0.3,
+                min_duration_off=0.5,
+            )
+            if not config.validate():
+                raise RuntimeError("Sherpa-ONNXの話者分離モデル設定を確認してください。")
+            _DIARIZATION_MODEL = sherpa_onnx.OfflineSpeakerDiarization(config)
+        return _DIARIZATION_MODEL
 
 
 def initialize_database(database_path: Path = DATABASE_PATH) -> None:
@@ -45,42 +118,111 @@ def initialize_database(database_path: Path = DATABASE_PATH) -> None:
         )
 
 
-def save_transcript(text: str, database_path: Path = DATABASE_PATH) -> None:
+def save_transcript(text: str, database_path: Path = DATABASE_PATH) -> int | None:
     """空でない文字起こし結果をSQLiteへ追加します。"""
     text = text.strip()
     if not text:
-        return
+        return None
 
     with sqlite3.connect(database_path) as connection:
-        connection.execute("INSERT INTO transcripts (text) VALUES (?)", (text,))
+        cursor = connection.execute("INSERT INTO transcripts (text) VALUES (?)", (text,))
+        return int(cursor.lastrowid)
 
 
-def transcribe_audio(model, audio: np.ndarray) -> str:
-    """音声配列を日本語指定でローカルWhisperに渡します。"""
-    with _TRANSCRIPTION_LOCK:
-        result = model.transcribe(
-            audio,
-            language="ja",
-            task="transcribe",
-            fp16=False,
-            verbose=False,
-            condition_on_previous_text=False,
+def update_transcript(transcript_id: int, text: str, database_path: Path = DATABASE_PATH) -> None:
+    """話者分離後のテキストで既存行を更新します（テーブル構成は変えません）。"""
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            "UPDATE transcripts SET text = ? WHERE id = ?",
+            (text.strip(), transcript_id),
         )
-    return result["text"].strip()
+
+
+def transcribe_audio_segments(model, audio: np.ndarray) -> list[dict]:
+    """WhisperXで日本語文字起こしと区間の時刻を取得します。"""
+    with _TRANSCRIPTION_LOCK:
+        result = model.transcribe(audio, batch_size=4, language="ja")
+    return [
+        {
+            "start": float(segment.get("start", 0.0)),
+            "end": float(segment.get("end", 0.0)),
+            "text": segment.get("text", "").strip(),
+        }
+        for segment in result.get("segments", [])
+        if segment.get("text", "").strip()
+    ]
+
+
+def diarize_audio(audio: np.ndarray) -> list[dict]:
+    """音声全体を一度に話者分離し、時間区間と話者番号を返します。"""
+    diarizer = load_diarization_model()
+    diarization_audio = audio.astype(np.float32, copy=False)
+    minimum_length = SAMPLE_RATE * CHUNK_SECONDS
+    if len(diarization_audio) < minimum_length:
+        diarization_audio = np.pad(diarization_audio, (0, minimum_length - len(diarization_audio)))
+    with _DIARIZATION_LOCK:
+        diarization_result = diarizer.process(diarization_audio).sort_by_start_time()
+
+    return [
+        {
+            "start": float(segment.start),
+            "end": float(segment.end),
+            "speaker_id": int(segment.speaker),
+        }
+        for segment in diarization_result
+    ]
+
+
+def add_speakers_to_segments(
+    transcript_segments: list[dict],
+    speaker_regions: list[dict],
+    time_offset: float = 0.0,
+    speaker_names: dict[int, str] | None = None,
+) -> list[dict]:
+    """文字起こし区間に、最も重なる話者区間のラベルを付けます。"""
+    if speaker_names is None:
+        speaker_names = {}
+
+    labeled_segments = []
+    for transcript_segment in transcript_segments:
+        start = float(transcript_segment["start"])
+        end = float(transcript_segment["end"])
+        best_id = None
+        best_overlap = 0.0
+        for region in speaker_regions:
+            overlap = max(
+                0.0,
+                min(time_offset + end, region["end"])
+                - max(time_offset + start, region["start"]),
+            )
+            if overlap > best_overlap:
+                best_id = region["speaker_id"]
+                best_overlap = overlap
+        speaker = (
+            speaker_names.setdefault(best_id, f"話者{len(speaker_names) + 1}")
+            if best_id is not None
+            else "話者不明"
+        )
+        labeled_segments.append(
+            {
+                "start": start,
+                "end": end,
+                "text": transcript_segment["text"],
+                "speaker": speaker,
+            }
+        )
+    return labeled_segments
 
 
 def transcribe_audio_file(model, audio_path: Path) -> str:
-    """音声ファイルをローカルWhisperで日本語文字起こしします。"""
-    with _TRANSCRIPTION_LOCK:
-        result = model.transcribe(
-            str(audio_path),
-            language="ja",
-            task="transcribe",
-            fp16=False,
-            verbose=False,
-            condition_on_previous_text=False,
-        )
-    return result["text"].strip()
+    """音声ファイルをWhisperXで文字起こしし、Sherpa-ONNXで話者を付けます。"""
+    audio = whisperx.load_audio(str(audio_path))
+    transcript_segments = transcribe_audio_segments(model, audio)
+    speaker_regions = diarize_audio(audio)
+    labeled_segments = add_speakers_to_segments(transcript_segments, speaker_regions)
+    return "\n".join(
+        f"{segment['speaker']}：{segment['text']}" for segment in labeled_segments
+    ).strip()
 
 
 def resample_audio(audio: np.ndarray, source_rate: int) -> np.ndarray:
@@ -158,6 +300,10 @@ class TranscriptionService:
         pending_frames: list[np.ndarray] = []
         pending_count = 0
         input_sample_rate = SAMPLE_RATE
+        session_audio_dir = Path(tempfile.mkdtemp(prefix="tamamori-audio-"))
+        audio_files: list[Path] = []
+        transcript_records: list[dict] = []
+        audio_offset_samples = 0
 
         def receive_audio(indata, frames, time_info, status):
             """録音コールバック。指定秒数分の音声をキューへ渡します。"""
@@ -180,21 +326,48 @@ class TranscriptionService:
                         self._dropped_chunks += 1
 
         def process_audio(audio: np.ndarray, model) -> None:
-            """無音でない区間を認識し、結果があれば保存します。"""
+            """区間音声を一時保存し、文字起こしをSQLiteへ仮保存します。"""
+            nonlocal audio_offset_samples
+            audio = resample_audio(audio, input_sample_rate)
+            audio_path = session_audio_dir / f"chunk-{len(audio_files):06d}.npy"
+            np.save(audio_path, audio)
+            audio_files.append(audio_path)
+            chunk_offset = audio_offset_samples / SAMPLE_RATE
+            audio_offset_samples += len(audio)
+
             if float(np.sqrt(np.mean(audio * audio))) < SILENCE_THRESHOLD:
                 return
 
-            audio = resample_audio(audio, input_sample_rate)
-            text = transcribe_audio(model, audio)
-            if text:
-                save_transcript(text, self.database_path)
-                print(f"[{datetime.now().astimezone().strftime('%H:%M:%S')}] {text}", flush=True)
+            transcript_segments = transcribe_audio_segments(model, audio)
+            transcript_text = "\n".join(
+                segment["text"] for segment in transcript_segments
+            ).strip()
+            if transcript_text:
+                row_id = save_transcript(transcript_text, self.database_path)
+                if row_id is not None:
+                    transcript_records.append(
+                        {
+                            "id": row_id,
+                            "offset": chunk_offset,
+                            "segments": transcript_segments,
+                        }
+                    )
+                print(
+                    f"[{datetime.now().astimezone().strftime('%H:%M:%S')}] {transcript_text}",
+                    flush=True,
+                )
             else:
                 print("（文字起こし結果なし。保存しません）", flush=True)
 
         try:
-            print(f"Whisperモデル '{self.model_name}' を読み込みます…", flush=True)
+            print(f"WhisperXモデル '{self.model_name}' を読み込みます…", flush=True)
             model = load_whisper_model(self.model_name)
+            if self._stop_event.is_set():
+                self._set_status("stopped")
+                return
+
+            print("Sherpa-ONNXの話者分離モデルを読み込みます…", flush=True)
+            load_diarization_model()
             if self._stop_event.is_set():
                 self._set_status("stopped")
                 return
@@ -236,14 +409,7 @@ class TranscriptionService:
                     except Exception as error:
                         print(f"音声区間の処理に失敗しました: {error}", file=sys.stderr, flush=True)
 
-            # 録音を閉じてから、すでにキューに入っている区間を処理します。
-            if pending_count:
-                final_audio = np.concatenate(pending_frames).astype(np.float32, copy=False)
-                try:
-                    process_audio(final_audio, model)
-                except Exception as error:
-                    print(f"最後の音声区間の処理に失敗しました: {error}", file=sys.stderr, flush=True)
-
+            # キュー内の古い区間を先に処理し、最後に未完了の短い区間を処理します。
             while True:
                 try:
                     audio = audio_chunks.get_nowait()
@@ -254,11 +420,41 @@ class TranscriptionService:
                 except Exception as error:
                     print(f"終了前の音声区間の処理に失敗しました: {error}", file=sys.stderr, flush=True)
 
+            if pending_count:
+                final_audio = np.concatenate(pending_frames).astype(np.float32, copy=False)
+                try:
+                    process_audio(final_audio, model)
+                except Exception as error:
+                    print(f"最後の音声区間の処理に失敗しました: {error}", file=sys.stderr, flush=True)
+
+            if transcript_records and audio_files:
+                print("録音全体の話者分離を行い、保存済みの文字起こしを更新します…", flush=True)
+                complete_audio = np.concatenate(
+                    [np.load(path).astype(np.float32, copy=False) for path in audio_files]
+                )
+                speaker_regions = diarize_audio(complete_audio)
+                speaker_names: dict[int, str] = {}
+                for record in transcript_records:
+                    labeled_segments = add_speakers_to_segments(
+                        record["segments"],
+                        speaker_regions,
+                        time_offset=record["offset"],
+                        speaker_names=speaker_names,
+                    )
+                    labeled_text = "\n".join(
+                        f"{segment['speaker']}：{segment['text']}"
+                        for segment in labeled_segments
+                    )
+                    update_transcript(record["id"], labeled_text, self.database_path)
+                print("話者名をSQLiteへ反映しました。", flush=True)
+
             self._set_status("stopped")
         except Exception as error:
             message = str(error)
             self._set_status("error", message)
-            print(f"録音またはWhisper処理に失敗しました: {message}", file=sys.stderr, flush=True)
+            print(f"録音または音声処理に失敗しました: {message}", file=sys.stderr, flush=True)
+        finally:
+            shutil.rmtree(session_audio_dir, ignore_errors=True)
 
 
 def main() -> None:

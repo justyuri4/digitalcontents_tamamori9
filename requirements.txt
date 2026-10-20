@@ -1,6 +1,8 @@
 fastapi
 numpy
-openai-whisper
+whisperx
+sherpa-onnx
+sherpa-onnx-bin
 openai
 python-dotenv
 python-multipart

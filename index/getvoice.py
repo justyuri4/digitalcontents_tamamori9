@@ -118,16 +118,24 @@ def recording_status():
 @app.get("/api/transcripts")
 def get_transcripts(
     after_id: int = Query(default=0, ge=0),
+    from_id: int | None = Query(default=None, ge=1),
     limit: int = Query(default=100, ge=1, le=500),
 ):
-    """指定IDより後に保存された文字起こしをJSONで返します。"""
+    """新しい行、または指定ID以降の行をJSONで返します。"""
     with sqlite3.connect(DATABASE_PATH) as connection:
         connection.row_factory = sqlite3.Row
-        rows = connection.execute(
-            """SELECT id, timestamp, text, processed
-               FROM transcripts WHERE id > ? ORDER BY id LIMIT ?""",
-            (after_id, limit),
-        ).fetchall()
+        if from_id is None:
+            rows = connection.execute(
+                """SELECT id, timestamp, text, processed
+                   FROM transcripts WHERE id > ? ORDER BY id LIMIT ?""",
+                (after_id, limit),
+            ).fetchall()
+        else:
+            rows = connection.execute(
+                """SELECT id, timestamp, text, processed
+                   FROM transcripts WHERE id >= ? ORDER BY id LIMIT ?""",
+                (from_id, limit),
+            ).fetchall()
     return {"items": [dict(row) for row in rows]}
 
 

@@ -8,11 +8,58 @@ const fileStatus = document.querySelector('#file-status');
 let currentStatus = 'stopped';
 let lastTranscriptId = null;
 let polling = false;
+let activeRecording = false;
+let finishingRecording = false;
+let recordingStartAfterId = null;
+let recordingBaseText = '';
+let recordingAppendedText = '';
+
+function appendTranscriptItem(item) {
+  const addition = `${transcript.value && !transcript.value.endsWith('\n') ? '\n' : ''}${item.text}\n`;
+  transcript.value += addition;
+  if (activeRecording) recordingAppendedText += addition;
+}
+
+async function applyFinalSpeakerLabels() {
+  if (!activeRecording || finishingRecording || recordingStartAfterId === null) return;
+  finishingRecording = true;
+  try {
+    const items = [];
+    let fromId = recordingStartAfterId + 1;
+    while (true) {
+      const data = await requestJson(`/api/transcripts?from_id=${fromId}&limit=500`);
+      items.push(...data.items);
+      if (data.items.length < 500) break;
+      fromId = data.items[data.items.length - 1].id + 1;
+    }
+
+    let finalAppendedText = '';
+    let previousText = recordingBaseText;
+    for (const item of items) {
+      const addition = `${previousText && !previousText.endsWith('\n') ? '\n' : ''}${item.text}\n`;
+      finalAppendedText += addition;
+      previousText += addition;
+    }
+    if (
+      transcript.value.startsWith(recordingBaseText) &&
+      transcript.value.slice(recordingBaseText.length) === recordingAppendedText
+    ) {
+      transcript.value = recordingBaseText + finalAppendedText;
+    }
+    if (items.length) lastTranscriptId = items[items.length - 1].id;
+  } catch (error) {
+    recordingStatus.textContent = `話者ラベルの再表示に失敗しました。SQLiteには反映済みです。(${error.message})`;
+  } finally {
+    activeRecording = false;
+    finishingRecording = false;
+    recordingStartAfterId = null;
+  }
+}
 
 function setRecordingStatus(status, error, droppedChunks = 0) {
   currentStatus = status;
   const labels = {
-    loading: ['Whisperモデルを読み込み中…', '読み込みを中止'],
+    loading: ['WhisperX・Sherpa-ONNXモデルを読み込み中…', '読み込みを中止'],
     recording: ['録音中です。認識した文章を入力欄に追加しています。', '録音を停止'],
     stopping: ['録音と保存を終了しています…', '停止中'],
     stopped: ['録音していません。', '録音を開始'],
@@ -39,8 +86,14 @@ async function refreshRecording() {
 
   const data = await requestJson(`/api/transcripts?after_id=${lastTranscriptId}`);
   for (const item of data.items) {
-    transcript.value += `${transcript.value && !transcript.value.endsWith('\n') ? '\n' : ''}${item.text}\n`;
+    appendTranscriptItem(item);
     lastTranscriptId = item.id;
+  }
+  if (activeRecording && state.status === 'stopped') {
+    await applyFinalSpeakerLabels();
+  } else if (activeRecording && state.status === 'error') {
+    activeRecording = false;
+    recordingStartAfterId = null;
   }
 }
 
@@ -54,6 +107,7 @@ micButton.addEventListener('click', async () => {
         body: JSON.stringify({})
       });
       setRecordingStatus(data.status);
+      if (data.status === 'stopped') await applyFinalSpeakerLabels();
     } else {
       const data = await requestJson('/api/recording/start', {
         method: 'POST',
@@ -61,6 +115,10 @@ micButton.addEventListener('click', async () => {
         body: JSON.stringify({})
       });
       lastTranscriptId = data.after_id;
+      recordingStartAfterId = data.after_id;
+      recordingBaseText = transcript.value;
+      recordingAppendedText = '';
+      activeRecording = true;
       setRecordingStatus(data.status);
     }
   } catch (error) {
