@@ -1,25 +1,25 @@
+"""互換用の起動口。アプリ本体は backend/main.py にあります。"""
+
+import importlib.util
+import sys
 from pathlib import Path
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse
 
-# 新しく作成したファイルから関数をインポート
-from backend.send_json import run_analysis_to_json
+BACKEND_DIR = Path(__file__).resolve().parent / "backend"
+if str(BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(BACKEND_DIR))
 
-app = FastAPI()
+spec = importlib.util.spec_from_file_location(
+    "tamamori_backend_main", BACKEND_DIR / "main.py"
+)
+if spec is None or spec.loader is None:
+    raise ImportError("backend/main.py を読み込めません")
 
-@app.get("/", response_class=HTMLResponse)
-async def read_index():
-    """index/index.html を返します"""
-    html_path = Path("index/index.html")
-    if not html_path.is_file():
-        raise HTTPException(status_code=404, detail="index/index.html が見つかりません")
-    return html_path.read_text(encoding="utf-8")
-
-@app.get("/api/analysis")
-async def get_analysis():
-    """切り出したサービスを実行し、解析結果のJSONを返します"""
-    return run_analysis_to_json()
+backend_main = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = backend_main
+spec.loader.exec_module(backend_main)
+app = backend_main.app
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8080, reload=True)
+
+    uvicorn.run(app, host="127.0.0.1", port=8080)

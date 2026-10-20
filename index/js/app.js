@@ -14,10 +14,46 @@ let lastTranscriptId = null;
 let polling = false;
 let activeRecording = false;
 let finishingRecording = false;
+let fileProcessing = false;
 let recordingStartAfterId = null;
 let recordingBaseText = '';
 let recordingAppendedText = '';
 let recordingItems = [];
+let lastSpeakerRevision = 0;
+
+async function loadRecordingItems() {
+  if (recordingStartAfterId === null) return [];
+  const items = [];
+  let fromId = recordingStartAfterId + 1;
+  while (true) {
+    const data = await requestJson(`/api/transcripts?from_id=${fromId}&limit=500`);
+    items.push(...data.items);
+    if (data.items.length < 500) break;
+    fromId = data.items[data.items.length - 1].id + 1;
+  }
+  return items;
+}
+
+function showRecordingItems(items) {
+  let appendedText = '';
+  let previousText = recordingBaseText;
+  for (const item of items) {
+    const addition = `${previousText && !previousText.endsWith('\n') ? '\n' : ''}${item.text}\n`;
+    appendedText += addition;
+    previousText += addition;
+  }
+
+  // 録音中に入力欄を編集していなければ、話者ラベルの更新を表示へ反映します。
+  if (
+    transcript.value.startsWith(recordingBaseText) &&
+    transcript.value.slice(recordingBaseText.length) === recordingAppendedText
+  ) {
+    transcript.value = recordingBaseText + appendedText;
+  }
+  recordingAppendedText = appendedText;
+  recordingItems = items;
+  if (items.length) lastTranscriptId = Math.max(lastTranscriptId ?? 0, items[items.length - 1].id);
+}
 
 function appendTranscriptItem(item) {
   const addition = `${transcript.value && !transcript.value.endsWith('\n') ? '\n' : ''}${item.text}\n`;
@@ -29,30 +65,8 @@ async function applyFinalSpeakerLabels() {
   if (!activeRecording || finishingRecording || recordingStartAfterId === null) return;
   finishingRecording = true;
   try {
-    const items = [];
-    let fromId = recordingStartAfterId + 1;
-    while (true) {
-      const data = await requestJson(`/api/transcripts?from_id=${fromId}&limit=500`);
-      items.push(...data.items);
-      if (data.items.length < 500) break;
-      fromId = data.items[data.items.length - 1].id + 1;
-    }
-
-    let finalAppendedText = '';
-    let previousText = recordingBaseText;
-    for (const item of items) {
-      const addition = `${previousText && !previousText.endsWith('\n') ? '\n' : ''}${item.text}\n`;
-      finalAppendedText += addition;
-      previousText += addition;
-    }
-    recordingItems = items;
-    if (
-      transcript.value.startsWith(recordingBaseText) &&
-      transcript.value.slice(recordingBaseText.length) === recordingAppendedText
-    ) {
-      transcript.value = recordingBaseText + finalAppendedText;
-    }
-    if (items.length) lastTranscriptId = items[items.length - 1].id;
+    const items = await loadRecordingItems();
+    showRecordingItems(items);
     showSpeakerNameEditor(items);
   } catch (error) {
     recordingStatus.textContent = `話者ラベルの再表示に失敗しました。SQLiteには反映済みです。(${error.message})`;
@@ -77,11 +91,7 @@ function showSpeakerNameEditor(items) {
     input.type = 'text';
     input.maxLength = 40;
     input.dataset.speakerId = String(id);
-    input.placeholder = id === 1
-      ? '例：小坂さん'
-      : id === 2
-        ? '例：井手さん'
-        : `例：話者${id}の名前`;
+    input.placeholder = `例：小坂さん`;
     label.append(input);
     speakerNameFields.append(label);
   }
@@ -164,6 +174,15 @@ async function refreshRecording() {
     appendTranscriptItem(item);
     lastTranscriptId = item.id;
   }
+  if (
+    activeRecording &&
+    state.status === 'recording' &&
+    state.speaker_revision > lastSpeakerRevision
+  ) {
+    const items = await loadRecordingItems();
+    showRecordingItems(items);
+    lastSpeakerRevision = state.speaker_revision;
+  }
   if (activeRecording && state.status === 'stopped') {
     await applyFinalSpeakerLabels();
   } else if (activeRecording && state.status === 'error') {
@@ -194,6 +213,7 @@ micButton.addEventListener('click', async () => {
       recordingBaseText = transcript.value;
       recordingAppendedText = '';
       recordingItems = [];
+      lastSpeakerRevision = 0;
       speakerNameEditor.classList.add('hidden');
       activeRecording = true;
       setRecordingStatus(data.status);
@@ -217,6 +237,7 @@ audioFile.addEventListener('change', async () => {
   const formData = new FormData();
   formData.append('file', file);
   formData.append('speaker_count', String(Number(speakerCount.value) || 2));
+  fileProcessing = true;
   audioFile.disabled = true;
   fileStatus.textContent = `${file.name}を文字起こし中です…`;
   try {
@@ -236,6 +257,7 @@ audioFile.addEventListener('change', async () => {
     fileStatus.textContent = `音声ファイルを処理できませんでした：${error.message}`;
   } finally {
     audioFile.disabled = false;
+    fileProcessing = false;
     audioFile.value = '';
   }
 });
@@ -260,6 +282,11 @@ document.querySelector('#load-sample').addEventListener('click', () => {
   transcript.focus();
 });
 document.querySelector('#clear-text').addEventListener('click', () => {
+  if (activeRecording || fileProcessing || ['loading', 'recording', 'stopping'].includes(currentStatus)) {
+    recordingStatus.textContent = '録音または音声ファイルの処理が終わってからクリアできます。';
+    return;
+  }
+
   transcript.value = '';
   document.querySelector('#gpt-response').value = '';
   speakerCount.value = '2';
@@ -271,7 +298,12 @@ document.querySelector('#clear-text').addEventListener('click', () => {
   document.querySelector('#result-summary').textContent = '';
   document.querySelector('#suggestion-list').replaceChildren();
   results.classList.add('hidden');
-  if (currentStatus === 'stopped') setRecordingStatus('stopped');
+  recordingItems = [];
+  recordingBaseText = '';
+  recordingAppendedText = '';
+  recordingStartAfterId = null;
+  finishingRecording = false;
+  if (currentStatus !== 'error') setRecordingStatus('stopped');
   window.scrollTo({ top: 0, behavior: 'smooth' });
 });
 
