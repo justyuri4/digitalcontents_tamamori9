@@ -8,10 +8,10 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import uvicorn
-from fastapi import FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from realtime_transcriber import (
     DATABASE_PATH,
@@ -43,7 +43,13 @@ app = FastAPI(title="ローカル音声文字起こし", lifespan=lifespan)
 
 
 class RecordingCommand(BaseModel):
-    """録音開始・停止のJSONリクエスト（現時点では空オブジェクト）。"""
+    """録音開始・停止のJSONリクエスト。"""
+    speaker_count: int = Field(default=2, ge=1, le=20)
+
+
+class RenameSpeakersRequest(BaseModel):
+    transcript_ids: list[int] = Field(min_length=1)
+    names: dict[str, str]
 
 
 def get_latest_transcript_id() -> int:
@@ -61,8 +67,35 @@ def home():
 def start_recording(command: RecordingCommand):
     # 開始時点のIDを返し、画面が過去の保存分を新規音声として表示しないようにします。
     after_id = get_latest_transcript_id()
-    status = service.start()
+    status = service.start(speaker_count=command.speaker_count)
     return {"status": status, "after_id": after_id}
+
+
+@app.post("/api/transcripts/rename-speakers")
+def rename_speakers(request: RenameSpeakersRequest):
+    """指定された録音行の話者ラベルを人物名に置き換えて保存します。"""
+    names = {
+        f"話者{int(speaker_id)}": name.strip()
+        for speaker_id, name in request.names.items()
+        if speaker_id.isdigit() and name.strip()
+    }
+    if not names:
+        raise HTTPException(status_code=422, detail="人物名を1つ以上入力してください")
+    with sqlite3.connect(DATABASE_PATH) as connection:
+        for transcript_id in request.transcript_ids:
+            row = connection.execute(
+                "SELECT text FROM transcripts WHERE id = ?", (transcript_id,)
+            ).fetchone()
+            if row is None:
+                continue
+            text = row[0]
+            for old_name, new_name in names.items():
+                text = text.replace(f"{old_name}：", f"{new_name}：")
+            connection.execute(
+                "UPDATE transcripts SET text = ? WHERE id = ?",
+                (text, transcript_id),
+            )
+    return {"updated": len(request.transcript_ids)}
 
 
 @app.post("/api/recording/stop")
@@ -70,17 +103,19 @@ def stop_recording(command: RecordingCommand):
     return {"status": service.stop()}
 
 
-def transcribe_and_save_file(audio_path: Path) -> str:
+def transcribe_and_save_file(audio_path: Path, speaker_count: int) -> tuple[str, int | None]:
     """アップロードファイルをローカルWhisperで処理し、結果だけ保存します。"""
     model = load_whisper_model(MODEL_NAME)
-    text = transcribe_audio_file(model, audio_path)
-    if text:
-        save_transcript(text)
-    return text
+    text = transcribe_audio_file(model, audio_path, speaker_count)
+    transcript_id = save_transcript(text) if text else None
+    return text, transcript_id
 
 
 @app.post("/api/transcripts/upload")
-async def upload_audio_file(file: UploadFile = File(...)):
+async def upload_audio_file(
+    file: UploadFile = File(...),
+    speaker_count: int = Form(default=2, ge=1, le=20),
+):
     """音声ファイルを文字起こしし、マイク入力と同じDBへ保存します。"""
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in SUPPORTED_AUDIO_EXTENSIONS:
@@ -100,8 +135,15 @@ async def upload_audio_file(file: UploadFile = File(...)):
                     raise HTTPException(status_code=413, detail="音声ファイルは25MB以下にしてください。")
                 temporary_file.write(chunk)
 
-        text = await asyncio.to_thread(transcribe_and_save_file, temporary_path)
-        return {"status": "saved" if text else "empty", "text": text, "saved": bool(text)}
+        text, transcript_id = await asyncio.to_thread(
+            transcribe_and_save_file, temporary_path, speaker_count
+        )
+        return {
+            "status": "saved" if text else "empty",
+            "text": text,
+            "saved": bool(text),
+            "transcript_id": transcript_id,
+        }
     finally:
         await file.close()
         if temporary_path is not None:
@@ -118,16 +160,24 @@ def recording_status():
 @app.get("/api/transcripts")
 def get_transcripts(
     after_id: int = Query(default=0, ge=0),
+    from_id: int | None = Query(default=None, ge=1),
     limit: int = Query(default=100, ge=1, le=500),
 ):
-    """指定IDより後に保存された文字起こしをJSONで返します。"""
+    """新しい行、または指定ID以降の行をJSONで返します。"""
     with sqlite3.connect(DATABASE_PATH) as connection:
         connection.row_factory = sqlite3.Row
-        rows = connection.execute(
-            """SELECT id, timestamp, text, processed
-               FROM transcripts WHERE id > ? ORDER BY id LIMIT ?""",
-            (after_id, limit),
-        ).fetchall()
+        if from_id is None:
+            rows = connection.execute(
+                """SELECT id, timestamp, text, processed
+                   FROM transcripts WHERE id > ? ORDER BY id LIMIT ?""",
+                (after_id, limit),
+            ).fetchall()
+        else:
+            rows = connection.execute(
+                """SELECT id, timestamp, text, processed
+                   FROM transcripts WHERE id >= ? ORDER BY id LIMIT ?""",
+                (from_id, limit),
+            ).fetchall()
     return {"items": [dict(row) for row in rows]}
 
 

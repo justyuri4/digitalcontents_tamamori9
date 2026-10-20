@@ -8,16 +8,28 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from functools import lru_cache
+from pydantic import BaseModel, Field
 from models import (
   AnalyzeRequest,
   AnalyzeResponse,
   ChatRequest,
   ChatResponse,
-  SimilarityRequest,
-  SimilarityResponse,
   TopicAnalysis,
 )
-from topic_ditecter import TopicShiftDetector
+from topic_detecter import TopicShiftDetector
+
+class SimilarityRequest(BaseModel):
+  current_message: str
+  context_messages: list[str]
+  threshold: float = Field(default=0.74, ge=0, le=1)
+
+
+class SimilarityResponse(BaseModel):
+  similarity: float
+  context_similarity: float
+  threshold: float
+  topic_changed: bool
+
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "index"
 if str(FRONTEND_DIR) not in sys.path:
