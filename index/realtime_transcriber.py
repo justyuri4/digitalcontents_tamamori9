@@ -23,6 +23,7 @@ DATABASE_PATH = Path(__file__).with_name("conversation.db")
 MODEL_DIRECTORY = Path(__file__).with_name("models") / "sherpa-onnx"
 SAMPLE_RATE = 16_000
 CHUNK_SECONDS = 10
+LIVE_DIARIZATION_INTERVAL_SECONDS = 10
 SILENCE_THRESHOLD = 0.01
 MAX_QUEUED_CHUNKS = 20
 SEGMENTATION_URL = (
@@ -40,6 +41,9 @@ _MODEL_LOCK = threading.Lock()
 _TRANSCRIPTION_LOCK = threading.Lock()
 _DIARIZATION_LOCK = threading.Lock()
 _DIARIZATION_MODELS = {}
+_ALIGNMENT_MODEL = None
+_ALIGNMENT_MODEL_LOCK = threading.Lock()
+_ALIGNMENT_LOAD_FAILED = False
 
 
 def load_whisper_model(model_name: str):
@@ -172,6 +176,63 @@ def diarize_audio(audio: np.ndarray, num_speakers: int | None = None) -> list[di
     ]
 
 
+def segment_has_multiple_speakers(
+    transcript_segments: list[dict],
+    speaker_regions: list[dict],
+    time_offset: float = 0.0,
+) -> bool:
+    """Whisperの一区間に複数の話者区間が重なっているか調べます。"""
+    for transcript_segment in transcript_segments:
+        if transcript_segment.get("chars"):
+            continue
+        start = time_offset + float(transcript_segment["start"])
+        end = time_offset + float(transcript_segment["end"])
+        overlapping_speakers = {
+            region["speaker_id"]
+            for region in speaker_regions
+            if min(end, region["end"]) > max(start, region["start"])
+        }
+        if len(overlapping_speakers) > 1:
+            return True
+    return False
+
+
+def align_transcription_segments(
+    transcript_segments: list[dict], audio: np.ndarray
+) -> list[dict]:
+    """日本語の文字ごとの時刻を取得し、話者交代位置を細かく分けられるようにします。"""
+    global _ALIGNMENT_MODEL, _ALIGNMENT_LOAD_FAILED
+    if not transcript_segments or _ALIGNMENT_LOAD_FAILED:
+        return transcript_segments
+
+    try:
+        with _ALIGNMENT_MODEL_LOCK:
+            if _ALIGNMENT_MODEL is None:
+                # 日本語アラインメントモデルは初回だけ取得し、以降はメモリ上で再利用します。
+                _ALIGNMENT_MODEL = whisperx.load_align_model(
+                    language_code="ja", device="cpu"
+                )
+            align_model, metadata = _ALIGNMENT_MODEL
+
+        result = whisperx.align(
+            transcript_segments,
+            align_model,
+            metadata,
+            audio,
+            "cpu",
+            return_char_alignments=True,
+        )
+        return result.get("segments", transcript_segments)
+    except Exception as error:
+        _ALIGNMENT_LOAD_FAILED = True
+        print(
+            f"日本語の文字時刻合わせを使えません。話者ラベルは従来の区間単位で付けます: {error}",
+            file=sys.stderr,
+            flush=True,
+        )
+        return transcript_segments
+
+
 def add_speakers_to_segments(
     transcript_segments: list[dict],
     speaker_regions: list[dict],
@@ -183,9 +244,8 @@ def add_speakers_to_segments(
         speaker_names = {}
 
     labeled_segments = []
-    for transcript_segment in transcript_segments:
-        start = float(transcript_segment["start"])
-        end = float(transcript_segment["end"])
+
+    def speaker_id_for_interval(start: float, end: float):
         best_id = None
         best_overlap = 0.0
         for region in speaker_regions:
@@ -197,20 +257,144 @@ def add_speakers_to_segments(
             if overlap > best_overlap:
                 best_id = region["speaker_id"]
                 best_overlap = overlap
-        speaker = (
-            speaker_names.setdefault(best_id, f"話者{len(speaker_names) + 1}")
-            if best_id is not None
-            else "話者不明"
+
+        # 文字の時刻が話者境界に重なる場合は、その文字の中央時刻で判定します。
+        if best_id is None:
+            midpoint = time_offset + (start + end) / 2
+            for region in speaker_regions:
+                if region["start"] <= midpoint <= region["end"]:
+                    return region["speaker_id"]
+            if speaker_regions:
+                nearest = min(
+                    speaker_regions,
+                    key=lambda region: min(
+                        abs(midpoint - region["start"]),
+                        abs(midpoint - region["end"]),
+                    ),
+                )
+                # WhisperとSherpa-ONNXの区間境界にはずれが出るため、
+                # 文字起こし済みの発言には最も近い検出話者を割り当てます。
+                return nearest["speaker_id"]
+        return best_id
+
+    def speaker_label(speaker_id):
+        if speaker_id is None:
+            return "話者不明"
+        return speaker_names.setdefault(
+            speaker_id, f"話者{len(speaker_names) + 1}"
         )
+
+    for transcript_segment in transcript_segments:
+        start = float(transcript_segment["start"])
+        end = float(transcript_segment["end"])
+        aligned_chars = transcript_segment.get("chars") or []
+        if aligned_chars:
+            # ひとつの文字起こし区間に話者交代があっても、文字の時刻で分けます。
+            groups = []
+            text_length = max(1, len(aligned_chars))
+            for index, char_info in enumerate(aligned_chars):
+                char = char_info.get("char", "")
+                if not char:
+                    continue
+                if char.isspace():
+                    if groups:
+                        groups[-1]["text"] += char
+                    continue
+                char_start = char_info.get("start")
+                char_end = char_info.get("end")
+                if char_start is None or char_end is None:
+                    char_start = start + (end - start) * index / text_length
+                    char_end = start + (end - start) * (index + 1) / text_length
+                speaker_id = speaker_id_for_interval(
+                    float(char_start), float(char_end)
+                )
+                label = speaker_label(speaker_id)
+                if groups and groups[-1]["speaker"] == label:
+                    groups[-1]["text"] += char
+                    groups[-1]["end"] = float(char_end)
+                else:
+                    groups.append(
+                        {
+                            "start": float(char_start),
+                            "end": float(char_end),
+                            "text": char,
+                            "speaker": label,
+                        }
+                    )
+            if groups:
+                labeled_segments.extend(groups)
+                continue
+
+        speaker_id = speaker_id_for_interval(start, end)
         labeled_segments.append(
             {
                 "start": start,
                 "end": end,
                 "text": transcript_segment["text"],
-                "speaker": speaker,
+                "speaker": speaker_label(speaker_id),
             }
         )
-    return labeled_segments
+
+    # 文字単位の時刻ずれで生じた短いラベルの揺れを、前後の発言へ統合します。
+    def visible_character_count(text: str) -> int:
+        punctuation = "。、．，！？!?「」『』（）()…・"
+        return sum(
+            not char.isspace() and char not in punctuation for char in text
+        )
+
+    for index, segment in enumerate(labeled_segments):
+        if not segment["text"].strip():
+            continue
+        duration = max(0.0, segment["end"] - segment["start"])
+        character_count = visible_character_count(segment["text"])
+        is_short_fragment = duration < 0.35 and character_count <= 2
+        is_tiny_fragment = duration < 0.2 and character_count <= 1
+        if segment["speaker"] != "話者不明" and not is_short_fragment:
+            continue
+
+        previous = labeled_segments[index - 1] if index > 0 else None
+        following = (
+            labeled_segments[index + 1]
+            if index + 1 < len(labeled_segments)
+            else None
+        )
+        neighbors = [
+            item
+            for item in (previous, following)
+            if item is not None and item["speaker"] != "話者不明"
+        ]
+        if segment["speaker"] != "話者不明":
+            # 短い相づちは、同じ話者の発言に挟まれた場合だけ揺れとみなします。
+            if not (
+                is_short_fragment
+                and len(neighbors) == 2
+                and neighbors[0]["speaker"] == neighbors[1]["speaker"]
+            ) and not (is_tiny_fragment and len(neighbors) == 1):
+                continue
+        if not neighbors:
+            continue
+        if len(neighbors) == 2 and neighbors[0]["speaker"] == neighbors[1]["speaker"]:
+            segment["speaker"] = neighbors[0]["speaker"]
+        elif len(neighbors) == 1:
+            segment["speaker"] = neighbors[0]["speaker"]
+        else:
+            segment["speaker"] = max(
+                neighbors, key=lambda item: item["end"] - item["start"]
+            )["speaker"]
+
+    merged_segments = []
+    for segment in labeled_segments:
+        if not segment["text"].strip():
+            continue
+        if (
+            merged_segments
+            and merged_segments[-1]["speaker"] == segment["speaker"]
+        ):
+            merged_segments[-1]["text"] += segment["text"]
+            merged_segments[-1]["end"] = segment["end"]
+        else:
+            merged_segments.append(segment.copy())
+    return merged_segments
 
 
 def transcribe_audio_file(
@@ -220,6 +404,9 @@ def transcribe_audio_file(
     audio = whisperx.load_audio(str(audio_path))
     transcript_segments = transcribe_audio_segments(model, audio)
     speaker_regions = diarize_audio(audio, num_speakers)
+    print(f"音声ファイルの話者区間を{len(speaker_regions)}件検出しました。", flush=True)
+    if segment_has_multiple_speakers(transcript_segments, speaker_regions):
+        transcript_segments = align_transcription_segments(transcript_segments, audio)
     labeled_segments = add_speakers_to_segments(transcript_segments, speaker_regions)
     return "\n".join(
         f"{segment['speaker']}：{segment['text']}" for segment in labeled_segments
@@ -255,6 +442,7 @@ class TranscriptionService:
         self._error: str | None = None
         self._dropped_chunks = 0
         self._speaker_count = 2
+        self._speaker_revision = 0
 
     def start(self, speaker_count: int = 2) -> str:
         """録音スレッドを開始します。すでに動作中なら現在の状態を返します。"""
@@ -265,6 +453,7 @@ class TranscriptionService:
             self._error = None
             self._dropped_chunks = 0
             self._speaker_count = speaker_count
+            self._speaker_revision = 0
             self._status = "loading"
             self._thread = threading.Thread(target=self._run, daemon=True)
             self._thread.start()
@@ -290,6 +479,7 @@ class TranscriptionService:
                 "status": self._status,
                 "error": self._error,
                 "dropped_chunks": self._dropped_chunks,
+                "speaker_revision": self._speaker_revision,
             }
 
     def _set_status(self, status: str, error: str | None = None) -> None:
@@ -307,6 +497,7 @@ class TranscriptionService:
         audio_files: list[Path] = []
         transcript_records: list[dict] = []
         audio_offset_samples = 0
+        last_live_diarization_samples = 0
 
         def receive_audio(indata, frames, time_info, status):
             """録音コールバック。指定秒数分の音声をキューへ渡します。"""
@@ -353,6 +544,7 @@ class TranscriptionService:
                             "id": row_id,
                             "offset": chunk_offset,
                             "segments": transcript_segments,
+                            "audio_path": audio_path,
                         }
                     )
                 print(
@@ -362,6 +554,57 @@ class TranscriptionService:
             else:
                 print("（文字起こし結果なし。保存しません）", flush=True)
 
+        def update_speaker_labels(force: bool = False) -> None:
+            """録音済み音声全体を再解析し、SQLiteの話者ラベルを更新します。"""
+            nonlocal last_live_diarization_samples
+            if not transcript_records or not audio_files:
+                return
+            interval_samples = SAMPLE_RATE * LIVE_DIARIZATION_INTERVAL_SECONDS
+            if (
+                not force
+                and audio_offset_samples - last_live_diarization_samples < interval_samples
+            ):
+                return
+
+            complete_audio = np.concatenate(
+                [np.load(path).astype(np.float32, copy=False) for path in audio_files]
+            )
+            speaker_regions = diarize_audio(complete_audio, self._speaker_count)
+            print(f"話者区間を{len(speaker_regions)}件検出しました。", flush=True)
+            speaker_names: dict[int, str] = {}
+            for record in transcript_records:
+                transcript_segments = record["segments"]
+                # 録音中は追加モデルによる重い文字時刻合わせを避け、停止後だけ実行します。
+                if force and segment_has_multiple_speakers(
+                    transcript_segments,
+                    speaker_regions,
+                    time_offset=record["offset"],
+                ):
+                    chunk_audio = np.load(record["audio_path"]).astype(
+                        np.float32, copy=False
+                    )
+                    transcript_segments = align_transcription_segments(
+                        transcript_segments, chunk_audio
+                    )
+                    if any(segment.get("chars") for segment in transcript_segments):
+                        record["segments"] = transcript_segments
+                labeled_segments = add_speakers_to_segments(
+                    transcript_segments,
+                    speaker_regions,
+                    time_offset=record["offset"],
+                    speaker_names=speaker_names,
+                )
+                labeled_text = "\n".join(
+                    f"{segment['speaker']}：{segment['text']}"
+                    for segment in labeled_segments
+                )
+                update_transcript(record["id"], labeled_text, self.database_path)
+
+            last_live_diarization_samples = audio_offset_samples
+            with self._lock:
+                self._speaker_revision += 1
+            print("話者ラベルを更新しました。", flush=True)
+
         try:
             print(f"WhisperXモデル '{self.model_name}' を読み込みます…", flush=True)
             model = load_whisper_model(self.model_name)
@@ -370,7 +613,7 @@ class TranscriptionService:
                 return
 
             print("Sherpa-ONNXの話者分離モデルを読み込みます…", flush=True)
-            load_diarization_model()
+            load_diarization_model(self._speaker_count)
             if self._stop_event.is_set():
                 self._set_status("stopped")
                 return
@@ -409,6 +652,7 @@ class TranscriptionService:
 
                     try:
                         process_audio(audio, model)
+                        update_speaker_labels()
                     except Exception as error:
                         print(f"音声区間の処理に失敗しました: {error}", file=sys.stderr, flush=True)
 
@@ -420,6 +664,7 @@ class TranscriptionService:
                     break
                 try:
                     process_audio(audio, model)
+                    update_speaker_labels()
                 except Exception as error:
                     print(f"終了前の音声区間の処理に失敗しました: {error}", file=sys.stderr, flush=True)
 
@@ -431,25 +676,8 @@ class TranscriptionService:
                     print(f"最後の音声区間の処理に失敗しました: {error}", file=sys.stderr, flush=True)
 
             if transcript_records and audio_files:
-                print("録音全体の話者分離を行い、保存済みの文字起こしを更新します…", flush=True)
-                complete_audio = np.concatenate(
-                    [np.load(path).astype(np.float32, copy=False) for path in audio_files]
-                )
-                speaker_regions = diarize_audio(complete_audio, self._speaker_count)
-                speaker_names: dict[int, str] = {}
-                for record in transcript_records:
-                    labeled_segments = add_speakers_to_segments(
-                        record["segments"],
-                        speaker_regions,
-                        time_offset=record["offset"],
-                        speaker_names=speaker_names,
-                    )
-                    labeled_text = "\n".join(
-                        f"{segment['speaker']}：{segment['text']}"
-                        for segment in labeled_segments
-                    )
-                    update_transcript(record["id"], labeled_text, self.database_path)
-                print("話者名をSQLiteへ反映しました。", flush=True)
+                print("録音の最終話者分離を行い、SQLiteを更新します…", flush=True)
+                update_speaker_labels(force=True)
 
             self._set_status("stopped")
         except Exception as error:
