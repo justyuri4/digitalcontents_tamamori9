@@ -5,6 +5,10 @@ const micButton = document.querySelector('#mic-button');
 const recordingStatus = document.querySelector('#recording-status');
 const audioFile = document.querySelector('#audio-file');
 const fileStatus = document.querySelector('#file-status');
+const speakerCount = document.querySelector('#speaker-count');
+const speakerNameEditor = document.querySelector('#speaker-name-editor');
+const speakerNameFields = document.querySelector('#speaker-name-fields');
+const speakerNameStatus = document.querySelector('#speaker-name-status');
 let currentStatus = 'stopped';
 let lastTranscriptId = null;
 let polling = false;
@@ -13,6 +17,7 @@ let finishingRecording = false;
 let recordingStartAfterId = null;
 let recordingBaseText = '';
 let recordingAppendedText = '';
+let recordingItems = [];
 
 function appendTranscriptItem(item) {
   const addition = `${transcript.value && !transcript.value.endsWith('\n') ? '\n' : ''}${item.text}\n`;
@@ -40,6 +45,7 @@ async function applyFinalSpeakerLabels() {
       finalAppendedText += addition;
       previousText += addition;
     }
+    recordingItems = items;
     if (
       transcript.value.startsWith(recordingBaseText) &&
       transcript.value.slice(recordingBaseText.length) === recordingAppendedText
@@ -47,6 +53,7 @@ async function applyFinalSpeakerLabels() {
       transcript.value = recordingBaseText + finalAppendedText;
     }
     if (items.length) lastTranscriptId = items[items.length - 1].id;
+    showSpeakerNameEditor(items);
   } catch (error) {
     recordingStatus.textContent = `話者ラベルの再表示に失敗しました。SQLiteには反映済みです。(${error.message})`;
   } finally {
@@ -55,6 +62,62 @@ async function applyFinalSpeakerLabels() {
     recordingStartAfterId = null;
   }
 }
+
+function showSpeakerNameEditor(items) {
+  const speakerIds = [...new Set(items.flatMap(item =>
+    [...item.text.matchAll(/話者(\d+)：/g)].map(match => Number(match[1]))
+  ))].sort((a, b) => a - b);
+  if (!speakerIds.length) return;
+  speakerNameFields.replaceChildren();
+  for (const id of speakerIds) {
+    const label = document.createElement('label');
+    label.className = 'speaker-name-field';
+    label.textContent = `話者${id}`;
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.maxLength = 40;
+    input.dataset.speakerId = String(id);
+    input.placeholder = id === 1
+      ? '例：小坂さん'
+      : id === 2
+        ? '例：井手さん'
+        : `例：話者${id}の名前`;
+    label.append(input);
+    speakerNameFields.append(label);
+  }
+  speakerNameStatus.textContent = '';
+  speakerNameEditor.classList.remove('hidden');
+}
+
+document.querySelector('#save-speaker-names').addEventListener('click', async () => {
+  const names = Object.fromEntries([...speakerNameFields.querySelectorAll('input')]
+    .filter(input => input.value.trim())
+    .map(input => [input.dataset.speakerId, input.value.trim()]));
+  if (!Object.keys(names).length) {
+    speakerNameStatus.textContent = '変更する人物名を入力してください。';
+    return;
+  }
+  const button = document.querySelector('#save-speaker-names');
+  button.disabled = true;
+  try {
+    await requestJson('/api/transcripts/rename-speakers', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ transcript_ids: recordingItems.map(item => item.id), names })
+    });
+    for (const [id, name] of Object.entries(names)) {
+      transcript.value = transcript.value.replaceAll(`話者${id}：`, `${name}：`);
+      for (const item of recordingItems) {
+        item.text = item.text.replaceAll(`話者${id}：`, `${name}：`);
+      }
+    }
+    speakerNameStatus.textContent = '人物名を文字起こしを保存しました。';
+  } catch (error) {
+    speakerNameStatus.textContent = `保存できませんでした：${error.message}`;
+  } finally {
+    button.disabled = false;
+  }
+});
 
 function setRecordingStatus(status, error, droppedChunks = 0) {
   currentStatus = status;
@@ -74,7 +137,19 @@ function setRecordingStatus(status, error, droppedChunks = 0) {
 
 async function requestJson(url, options = {}) {
   const response = await fetch(url, options);
-  const data = await response.json();
+  const responseText = await response.text();
+  let data = {};
+  if (responseText.trim()) {
+    try {
+      data = JSON.parse(responseText);
+    } catch {
+      throw new Error(
+        `サーバーがJSON以外の応答を返しました（HTTP ${response.status}）。${responseText.slice(0, 240)}`
+      );
+    }
+  } else if (response.status !== 204) {
+    throw new Error(`サーバーから空の応答が返りました（HTTP ${response.status} ${response.statusText}）。`);
+  }
   if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
   return data;
 }
@@ -112,12 +187,14 @@ micButton.addEventListener('click', async () => {
       const data = await requestJson('/api/recording/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({})
+        body: JSON.stringify({ speaker_count: Number(speakerCount.value) || 2 })
       });
       lastTranscriptId = data.after_id;
       recordingStartAfterId = data.after_id;
       recordingBaseText = transcript.value;
       recordingAppendedText = '';
+      recordingItems = [];
+      speakerNameEditor.classList.add('hidden');
       activeRecording = true;
       setRecordingStatus(data.status);
     }
@@ -139,6 +216,7 @@ audioFile.addEventListener('change', async () => {
 
   const formData = new FormData();
   formData.append('file', file);
+  formData.append('speaker_count', String(Number(speakerCount.value) || 2));
   audioFile.disabled = true;
   fileStatus.textContent = `${file.name}を文字起こし中です…`;
   try {
@@ -150,6 +228,10 @@ audioFile.addEventListener('change', async () => {
       ? `${file.name}の文字起こしを保存しました。`
       : '文字起こし結果が空だったため、保存しませんでした。';
     await pollApi();
+    if (data.saved && data.transcript_id) {
+      recordingItems = [{ id: data.transcript_id, text: data.text }];
+      showSpeakerNameEditor(recordingItems);
+    }
   } catch (error) {
     fileStatus.textContent = `音声ファイルを処理できませんでした：${error.message}`;
   } finally {
@@ -179,7 +261,18 @@ document.querySelector('#load-sample').addEventListener('click', () => {
 });
 document.querySelector('#clear-text').addEventListener('click', () => {
   transcript.value = '';
+  document.querySelector('#gpt-response').value = '';
+  speakerCount.value = '2';
+  speakerNameFields.replaceChildren();
+  speakerNameEditor.classList.add('hidden');
+  speakerNameStatus.textContent = '';
+  fileStatus.textContent = '';
+  audioFile.value = '';
+  document.querySelector('#result-summary').textContent = '';
+  document.querySelector('#suggestion-list').replaceChildren();
   results.classList.add('hidden');
+  if (currentStatus === 'stopped') setRecordingStatus('stopped');
+  window.scrollTo({ top: 0, behavior: 'smooth' });
 });
 
 function makeSuggestions(text) {

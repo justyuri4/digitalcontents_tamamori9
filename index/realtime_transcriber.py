@@ -39,7 +39,7 @@ _MODEL_CACHE = {}
 _MODEL_LOCK = threading.Lock()
 _TRANSCRIPTION_LOCK = threading.Lock()
 _DIARIZATION_LOCK = threading.Lock()
-_DIARIZATION_MODEL = None
+_DIARIZATION_MODELS = {}
 
 
 def load_whisper_model(model_name: str):
@@ -76,11 +76,10 @@ def _download_diarization_models() -> None:
             temporary_model.unlink(missing_ok=True)
 
 
-def load_diarization_model():
+def load_diarization_model(num_speakers: int | None = None):
     """Sherpa-ONNXの話者分離モデルを一度だけ読み込みます。"""
-    global _DIARIZATION_MODEL
     with _DIARIZATION_LOCK:
-        if _DIARIZATION_MODEL is None:
+        if num_speakers not in _DIARIZATION_MODELS:
             _download_diarization_models()
             config = sherpa_onnx.OfflineSpeakerDiarizationConfig(
                 segmentation=sherpa_onnx.OfflineSpeakerSegmentationModelConfig(
@@ -93,7 +92,7 @@ def load_diarization_model():
                     model=str(EMBEDDING_MODEL)
                 ),
                 clustering=sherpa_onnx.FastClusteringConfig(
-                    num_clusters=-1,
+                    num_clusters=num_speakers if num_speakers is not None else -1,
                     threshold=0.5,
                 ),
                 min_duration_on=0.3,
@@ -101,8 +100,8 @@ def load_diarization_model():
             )
             if not config.validate():
                 raise RuntimeError("Sherpa-ONNXの話者分離モデル設定を確認してください。")
-            _DIARIZATION_MODEL = sherpa_onnx.OfflineSpeakerDiarization(config)
-        return _DIARIZATION_MODEL
+            _DIARIZATION_MODELS[num_speakers] = sherpa_onnx.OfflineSpeakerDiarization(config)
+        return _DIARIZATION_MODELS[num_speakers]
 
 
 def initialize_database(database_path: Path = DATABASE_PATH) -> None:
@@ -153,9 +152,9 @@ def transcribe_audio_segments(model, audio: np.ndarray) -> list[dict]:
     ]
 
 
-def diarize_audio(audio: np.ndarray) -> list[dict]:
+def diarize_audio(audio: np.ndarray, num_speakers: int | None = None) -> list[dict]:
     """音声全体を一度に話者分離し、時間区間と話者番号を返します。"""
-    diarizer = load_diarization_model()
+    diarizer = load_diarization_model(num_speakers)
     diarization_audio = audio.astype(np.float32, copy=False)
     minimum_length = SAMPLE_RATE * CHUNK_SECONDS
     if len(diarization_audio) < minimum_length:
@@ -214,11 +213,13 @@ def add_speakers_to_segments(
     return labeled_segments
 
 
-def transcribe_audio_file(model, audio_path: Path) -> str:
+def transcribe_audio_file(
+    model, audio_path: Path, num_speakers: int | None = None
+) -> str:
     """音声ファイルをWhisperXで文字起こしし、Sherpa-ONNXで話者を付けます。"""
     audio = whisperx.load_audio(str(audio_path))
     transcript_segments = transcribe_audio_segments(model, audio)
-    speaker_regions = diarize_audio(audio)
+    speaker_regions = diarize_audio(audio, num_speakers)
     labeled_segments = add_speakers_to_segments(transcript_segments, speaker_regions)
     return "\n".join(
         f"{segment['speaker']}：{segment['text']}" for segment in labeled_segments
@@ -253,8 +254,9 @@ class TranscriptionService:
         self._status = "stopped"
         self._error: str | None = None
         self._dropped_chunks = 0
+        self._speaker_count = 2
 
-    def start(self) -> str:
+    def start(self, speaker_count: int = 2) -> str:
         """録音スレッドを開始します。すでに動作中なら現在の状態を返します。"""
         with self._lock:
             if self._thread and self._thread.is_alive():
@@ -262,6 +264,7 @@ class TranscriptionService:
             self._stop_event.clear()
             self._error = None
             self._dropped_chunks = 0
+            self._speaker_count = speaker_count
             self._status = "loading"
             self._thread = threading.Thread(target=self._run, daemon=True)
             self._thread.start()
@@ -432,7 +435,7 @@ class TranscriptionService:
                 complete_audio = np.concatenate(
                     [np.load(path).astype(np.float32, copy=False) for path in audio_files]
                 )
-                speaker_regions = diarize_audio(complete_audio)
+                speaker_regions = diarize_audio(complete_audio, self._speaker_count)
                 speaker_names: dict[int, str] = {}
                 for record in transcript_records:
                     labeled_segments = add_speakers_to_segments(

@@ -10,10 +10,17 @@ h2 { margin: 0; font-size: 18px; }
 .help { margin: 7px 0 13px; color: #666; font-size: 13px; }
 textarea { display: block; width: 100%; min-height: 210px; padding: 12px; resize: vertical; border: 1px solid #bbb; border-radius: 5px; font: inherit; line-height: 1.7; }
 textarea:focus { outline: 2px solid #9ab9e4; border-color: #527eaf; }
+#transcript::placeholder { white-space: pre-line; }
 .conversation-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
 .conversation-column h3 { margin: 0 0 8px; color: #4e5e70; font-size: 14px; font-weight: 600; }
 .conversation-column textarea { min-height: 260px; border-color: #d4dbe4; border-radius: 8px; }
 #gpt-response { border-color: #d8e2ef; background: #f5f8fc; color: #394b60; }
+.speaker-count-label { display: inline-block; margin-top: 16px; margin-right: 8px; color: #4e5e70; font-size: 13px; }
+.speaker-count { width: 76px; padding: 7px 9px; border: 1px solid #c9d3df; border-radius: 5px; font: inherit; }
+.speaker-name-editor { margin-top: 14px; padding: 14px; border: 1px solid #d8e2ef; border-radius: 7px; background: #f8fafc; }
+.speaker-name-editor h3 { margin: 0; font-size: 15px; }
+.speaker-name-field { display: inline-flex; align-items: center; gap: 8px; margin: 0 12px 10px 0; color: #4e5e70; font-size: 13px; }
+.speaker-name-field input { width: min(180px, 48vw); padding: 7px 9px; border: 1px solid #c9d3df; border-radius: 5px; font: inherit; }
 .voice-inputs { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 12px; }
 .voice-button, .file-button { min-height: 58px; display: flex; align-items: center; gap: 11px; padding: 9px 12px; border: 1px solid #c9d3df; border-radius: 6px; background: #f8fafc; text-align: left; }
 .voice-button:hover, .file-button:hover { background: #f0f5fa; }
