@@ -2,35 +2,44 @@ import argparse
 import json
 from pathlib import Path
 
-from ai_service import ANALYSIS_PROMPT_TEMPLATE, get_chatgpt_response
-from topic_detecter import TopicShiftDetector
+# ai_serviceから必要なクラス・関数・テンプレートをすべてインポートする
+from backend.ai_service import (
+    ANALYSIS_PROMPT_TEMPLATE,
+    LiveTopicAnalyzer,
+    get_chatgpt_response,
+)
+from backend.topic_detecter import TopicShiftDetector
 
 SAMPLE_FILE = Path(__file__).with_name("sample_topic_conversation.txt")
 JSON_FILE = Path(__file__).with_name("conversation.json")
+SENT_PROMPT_FILE = Path(__file__).with_name("sent_prompt.txt")
+SAMPLE_OUTPUT_FILE = Path(__file__).with_name("sample_output.txt")
 
 
-class LiveTopicAnalyzer:
-  """確定済みの話題をChatGPTへ送り、出力を保存します。"""
+def get_sample_prompt_log_path(input_path=None):
+  if input_path is None:
+    input_path = JSON_FILE if JSON_FILE.is_file() else SAMPLE_FILE
 
-  def __init__(self, get_chatgpt_response, prompt_template, save_analysis):
-    self.get_chatgpt_response = get_chatgpt_response
-    self.prompt_template = prompt_template
-    self.save_analysis = save_analysis
+  if input_path.resolve() == SAMPLE_FILE.resolve():
+    return SENT_PROMPT_FILE
+  return None
 
-  def analyze_topic(self, topic):
-    topic = topic.strip()
-    if not topic:
-      return None
 
-    prompt = self.prompt_template.format(topic=topic)
-    analysis = self.get_chatgpt_response(prompt) or ""
-    self.save_analysis(topic, analysis)
-    return {"topic": topic, "analysis": analysis}
+def get_sample_output_log_path(input_path=None):
+  if input_path is None:
+    input_path = JSON_FILE if JSON_FILE.is_file() else SAMPLE_FILE
+
+  if input_path.resolve() == SAMPLE_FILE.resolve():
+    return SAMPLE_OUTPUT_FILE
+  return None
 
 
 def load_messages(input_path=None):
   if input_path is None:
     input_path = JSON_FILE if JSON_FILE.is_file() else SAMPLE_FILE
+
+  if not input_path.is_file():
+    return []
 
   content = input_path.read_text(encoding="utf-8")
   if input_path.suffix.lower() == ".json":
@@ -56,6 +65,45 @@ def save_analysis_result(topic, analysis):
   print(f"--- ChatGPT分析結果 ---\n{analysis}")
 
 
+def run_analysis_from_messages(messages, threshold=0.745, on_update=None):
+  """
+  メッセージを解析し、話題が完了して結果が蓄積されるたびに
+  on_update(results) コールバックを呼び出してリアルタイムに更新・通知する関数
+  """
+  results = []
+  
+  # リアルタイム解析用のアナライザーを準備
+  analyzer = LiveTopicAnalyzer(
+      get_chatgpt_response=get_chatgpt_response,
+      prompt_template=ANALYSIS_PROMPT_TEMPLATE,
+      save_analysis=lambda topic, analysis: None
+  )
+
+  # 話題が完了するたびに結果を蓄積し、更新コールバックがあれば呼び出す
+  def handle_topic_completed(topic):
+    analysis_result = analyzer.analyze_topic(topic)
+    results.append(analysis_result)
+    # 蓄積されるたびに外部へ現在の全リストを通知する
+    if on_update is not None:
+      on_update(results)
+
+  detector = TopicShiftDetector(
+      threshold=threshold,
+      on_topic_completed=handle_topic_completed
+  )
+
+  for message in messages:
+    detector.add_message(message)
+
+  # 最後に残っている話題をフラッシュして確定
+  detector.flush_topic()
+
+  return {
+      "topics": results,
+      "shift_indices": []
+  }
+
+
 def main():
   parser = argparse.ArgumentParser(
       description="話題検出のイベント通知をリアルタイム確認するデバッグスクリプトです。"
@@ -72,25 +120,30 @@ def main():
   if not messages:
     parser.error("会話テキストが空です")
 
-  # リアルタイム解析用のアナライザーを準備
+  print("\n=== ChatGPTによる話題分析結果の逐次蓄積シミュレーション ===")
+  
   analyzer = LiveTopicAnalyzer(
       get_chatgpt_response=get_chatgpt_response,
       prompt_template=ANALYSIS_PROMPT_TEMPLATE,
       save_analysis=save_analysis_result,
+      prompt_log_path=get_sample_prompt_log_path(args.input),
+        analysis_log_path=get_sample_output_log_path(args.input),
   )
 
-  # Detectorにイベント通知（コールバック）を設定して初期化
+  results = []
+  def console_on_update(current_results):
+    print(f"\n[リアルタイム更新] 現在蓄積された話題の数: {len(current_results)}")
+
   detector = TopicShiftDetector(
-      on_topic_completed=lambda topic: analyzer.analyze_topic(topic)
+      on_topic_completed=lambda topic: [
+          results.append(analyzer.analyze_topic(topic)),
+          console_on_update(results)
+      ]
   )
 
-  print("\n=== リアルタイム（発話ごと）の話題検出とイベント通知のシミュレーション ===")
   for message in messages:
-    print(f"\n[受信メッセージ]: {message}")
-    # メッセージを順番に追加（話題が変わるとdetectorから自動でイベントが発火する）
     detector.add_message(message)
 
-  # 最後に残っている最後の話題をフラッシュして確定・送信
   detector.flush_topic()
 
 

@@ -18,10 +18,22 @@ let recordingStartAfterId = null;
 let recordingBaseText = '';
 let recordingAppendedText = '';
 let recordingItems = [];
+let lastTopicTranscript = '';
+let pendingTopicAppend = '';
+let topicSendTimer = null;
+let topicRequestQueue = Promise.resolve();
+
+// すでに定義されている transcript にイベントを追加するだけにする
+if (transcript) {
+  transcript.addEventListener('input', handleTranscriptInput);
+  transcript.addEventListener('blur', () => flushTopicAppend(true));
+}
 
 function appendTranscriptItem(item) {
   const addition = `${transcript.value && !transcript.value.endsWith('\n') ? '\n' : ''}${item.text}\n`;
   transcript.value += addition;
+  lastTopicTranscript = transcript.value;
+  queueTopicAppend(addition);
   if (activeRecording) recordingAppendedText += addition;
 }
 
@@ -51,6 +63,7 @@ async function applyFinalSpeakerLabels() {
       transcript.value.slice(recordingBaseText.length) === recordingAppendedText
     ) {
       transcript.value = recordingBaseText + finalAppendedText;
+      resetTopicDetector(transcript.value);
     }
     if (items.length) lastTranscriptId = items[items.length - 1].id;
     showSpeakerNameEditor(items);
@@ -111,6 +124,7 @@ document.querySelector('#save-speaker-names').addEventListener('click', async ()
         item.text = item.text.replaceAll(`話者${id}：`, `${name}：`);
       }
     }
+    resetTopicDetector(transcript.value);
     speakerNameStatus.textContent = '人物名を文字起こしを保存しました。';
   } catch (error) {
     speakerNameStatus.textContent = `保存できませんでした：${error.message}`;
@@ -257,10 +271,12 @@ window.setInterval(pollApi, 1200);
 
 document.querySelector('#load-sample').addEventListener('click', () => {
   transcript.value = sample;
+  transcript.dispatchEvent(new Event('input', { bubbles: true }));
   transcript.focus();
 });
 document.querySelector('#clear-text').addEventListener('click', () => {
   transcript.value = '';
+  resetTopicDetector('');
   document.querySelector('#gpt-response').value = '';
   speakerCount.value = '2';
   speakerNameFields.replaceChildren();
@@ -330,3 +346,59 @@ document.querySelector('#generate').addEventListener('click', () => {
   results.classList.remove('hidden');
   results.scrollIntoView({ behavior: 'smooth', block: 'start' });
 });
+
+function handleTranscriptInput() {
+  const currentText = transcript.value;
+  if (currentText.startsWith(lastTopicTranscript)) {
+    const addition = currentText.slice(lastTopicTranscript.length);
+    lastTopicTranscript = currentText;
+    queueTopicAppend(addition);
+    return;
+  }
+
+  resetTopicDetector(currentText);
+}
+
+function queueTopicAppend(text) {
+  pendingTopicAppend += text;
+  window.clearTimeout(topicSendTimer);
+  topicSendTimer = window.setTimeout(flushTopicAppend, 350);
+}
+
+function flushTopicAppend(force = false) {
+  const lastCompleteLine = pendingTopicAppend.lastIndexOf('\n');
+  if (!force && lastCompleteLine < 0) return;
+
+  const splitAt = force ? pendingTopicAppend.length : lastCompleteLine + 1;
+  const addedText = pendingTopicAppend.slice(0, splitAt);
+  pendingTopicAppend = pendingTopicAppend.slice(splitAt);
+  if (!addedText.trim()) return;
+
+  topicRequestQueue = topicRequestQueue.then(async () => {
+    const data = await requestJson('/topic', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ added_text: addedText })
+    });
+    if (data.completed_topics.length) {
+      console.log('検出した話題の区切り:', data.completed_topics);
+    }
+  }).catch((error) => {
+    console.error('話題検出に失敗しました:', error);
+  });
+}
+
+function resetTopicDetector(text) {
+  window.clearTimeout(topicSendTimer);
+  pendingTopicAppend = '';
+  lastTopicTranscript = text;
+  topicRequestQueue = topicRequestQueue.then(() => requestJson('/topic/reset', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ transcript: text })
+  })).catch((error) => {
+    console.error('話題検出の文脈同期に失敗しました:', error);
+  });
+}
+
+resetTopicDetector(transcript.value);
