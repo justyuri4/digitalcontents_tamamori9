@@ -12,24 +12,89 @@ from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-
-from realtime_transcriber import (
-    DATABASE_PATH,
-    TranscriptionService,
-    initialize_database,
-    load_whisper_model,
-    save_transcript,
-    transcribe_audio_file,
-)
+import whisper
 
 
 PROJECT_DIR = Path(__file__).resolve().parent
-service = TranscriptionService(model_name=os.environ.get("WHISPER_MODEL", "base"))
+DATABASE_PATH = PROJECT_DIR / "transcripts.db"
 MODEL_NAME = os.environ.get("WHISPER_MODEL", "base")
 MAX_AUDIO_FILE_BYTES = 25 * 1024 * 1024
 SUPPORTED_AUDIO_EXTENSIONS = {
     ".wav", ".mp3", ".m4a", ".mp4", ".aac", ".flac", ".ogg", ".opus", ".webm"
 }
+
+
+# --- データベース・Whisper関連のヘルパー関数 ---
+
+def initialize_database():
+    """データベースとテーブルを初期化します。"""
+    with sqlite3.connect(DATABASE_PATH) as connection:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS transcripts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                text TEXT,
+                processed BOOLEAN DEFAULT 0
+            )
+            """
+        )
+
+
+def load_whisper_model(model_name: str):
+    """Whisperモデルをロードします。"""
+    return whisper.load_model(model_name)
+
+
+def transcribe_audio_file(model, audio_path: Path) -> str:
+    """音声ファイルをWhisperで文字起こしします。"""
+    result = model.transcribe(str(audio_path))
+    return result.get("text", "").strip()
+
+
+def save_transcript(text: str):
+    """文字起こし結果をデータベースに保存します。"""
+    if not text:
+        return
+    with sqlite3.connect(DATABASE_PATH) as connection:
+        connection.execute(
+            "INSERT INTO transcripts (text) VALUES (?)",
+            (text,)
+        )
+
+
+class TranscriptionService:
+    """音声文字起こしサービスを管理するクラス。"""
+
+    def __init__(self, model_name: str = "base"):
+        self.model_name = model_name
+        self.model = None
+        self._running = False
+
+    def start(self) -> str:
+        if self._running:
+            return "already_running"
+        self._running = True
+        if self.model is None:
+            self.model = load_whisper_model(self.model_name)
+        return "started"
+
+    def stop(self) -> str:
+        if not self._running:
+            return "not_running"
+        self._running = False
+        return "stopped"
+
+    def get_status(self) -> dict:
+        return {
+            "running": self._running,
+            "model": self.model_name,
+        }
+
+
+# --- FastAPI アプリケーション設定 ---
+
+service = TranscriptionService(model_name=MODEL_NAME)
 initialize_database()
 
 
@@ -181,8 +246,11 @@ def get_transcripts(
     return {"items": [dict(row) for row in rows]}
 
 
-app.mount("/css", StaticFiles(directory=PROJECT_DIR / "css"), name="css")
-app.mount("/js", StaticFiles(directory=PROJECT_DIR / "js"), name="js")
+# 静的ファイルのディレクトリが存在する場合のみマウント
+if (PROJECT_DIR / "css").exists():
+    app.mount("/css", StaticFiles(directory=PROJECT_DIR / "css"), name="css")
+if (PROJECT_DIR / "js").exists():
+    app.mount("/js", StaticFiles(directory=PROJECT_DIR / "js"), name="js")
 
 
 if __name__ == "__main__":

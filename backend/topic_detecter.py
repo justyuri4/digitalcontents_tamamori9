@@ -7,7 +7,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
 WORD_SIMILARITY_WEIGHT = 0.18
-DEFAULT_THRESHOLD = 0.745  # 委託先が持つべき正しいデフォルトのコンフィグ
+DEFAULT_THRESHOLD = 0.75  # 委託先が持つべき正しいデフォルトのコンフィグ
 DEMONSTRATIVE_REFERENCE_PATTERN = re.compile(
     r"(?:あそこ|こちら|そちら|あちら|これ|それ|あれ|ここ|そこ|この|その|あの|"
     r"こんな|そんな|あんな|こういう|そういう|ああいう)(?!ぞれ|ろ)"
@@ -41,11 +41,11 @@ class TopicShiftDetector:
     if not self.current_topic:
       return None
 
-    topic = "\\n".join(self.current_topic)
+    topic = "\n".join(self.current_topic)
     self.current_topic = []
     self.topic_count += 1
 
-    print(f"\\n=== 話題 {self.topic_count} が終了しました ===")
+    print(f"\n=== 話題 {self.topic_count} が終了しました ===")
     print("【話題の内容】")
     print(topic)
 
@@ -159,19 +159,15 @@ class TopicShiftDetector:
           and not self.has_response_word(message)
       )
       if topic_changed:
-        completed_topic = "\n".join(self.current_topic)
-        self.current_topic = []
+        # 話題が切り替わったときに現在の話題を確定してイベント発火する
+        completed_topic = self._complete_current_topic()
 
     self.current_topic.append(message)
     return completed_topic
 
   def flush_topic(self):
-    if not self.current_topic:
-      return None
-
-    topic = "\n".join(self.current_topic)
-    self.current_topic = []
-    return topic
+    # 最後に残っている話題を確定してイベント発火する
+    return self._complete_current_topic()
 
   def detect_shifts(self, messages):
     if len(messages) < 2:

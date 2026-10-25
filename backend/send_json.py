@@ -2,6 +2,8 @@
 from ai_treat import (
     LiveTopicAnalyzer,
     load_messages,
+    get_sample_prompt_log_path,
+    get_sample_output_log_path,
     get_chatgpt_response,
     ANALYSIS_PROMPT_TEMPLATE,
 )
@@ -21,7 +23,9 @@ def run_analysis_to_json():
         analyzer = LiveTopicAnalyzer(
             get_chatgpt_response=get_chatgpt_response,
             prompt_template=ANALYSIS_PROMPT_TEMPLATE,
-            save_analysis=lambda topic, analysis: None # 標準出力への保存はスキップ
+            save_analysis=lambda topic, analysis: None, # 標準出力への保存はスキップ
+            prompt_log_path=get_sample_prompt_log_path(None),
+            analysis_log_path=get_sample_output_log_path(None),
         )
 
         detector = TopicShiftDetector(
