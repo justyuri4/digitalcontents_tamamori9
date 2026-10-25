@@ -7,6 +7,7 @@ from backend.ai_service import (
     ANALYSIS_PROMPT_TEMPLATE,
     LiveTopicAnalyzer,
     get_chatgpt_response,
+  store_topic_analysis,
 )
 from backend.topic_detecter import TopicShiftDetector
 
@@ -65,7 +66,7 @@ def save_analysis_result(topic, analysis):
   print(f"--- ChatGPT分析結果 ---\n{analysis}")
 
 
-def run_analysis_from_messages(messages, threshold=0.745, on_update=None):
+def run_analysis_from_messages(messages, threshold=0.745, on_update=None, model=None):
   """
   メッセージを解析し、話題が完了して結果が蓄積されるたびに
   on_update(results) コールバックを呼び出してリアルタイムに更新・通知する関数
@@ -82,14 +83,17 @@ def run_analysis_from_messages(messages, threshold=0.745, on_update=None):
   # 話題が完了するたびに結果を蓄積し、更新コールバックがあれば呼び出す
   def handle_topic_completed(topic):
     analysis_result = analyzer.analyze_topic(topic)
-    results.append(analysis_result)
+    stored_result = store_topic_analysis(results, analysis_result)
+    if stored_result is not None:
+      analyzer.previous_topic = stored_result["topic"]
     # 蓄積されるたびに外部へ現在の全リストを通知する
     if on_update is not None:
       on_update(results)
 
   detector = TopicShiftDetector(
       threshold=threshold,
-      on_topic_completed=handle_topic_completed
+      on_topic_completed=handle_topic_completed,
+      model=model,
   )
 
   for message in messages:
@@ -136,7 +140,8 @@ def main():
 
   detector = TopicShiftDetector(
       on_topic_completed=lambda topic: [
-          results.append(analyzer.analyze_topic(topic)),
+        store_topic_analysis(results, analyzer.analyze_topic(topic)),
+        setattr(analyzer, "previous_topic", results[-1]["topic"]),
           console_on_update(results)
       ]
   )

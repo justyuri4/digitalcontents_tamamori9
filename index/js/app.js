@@ -1,5 +1,6 @@
 const sample = `田中：新しい企画を来月から始めたいです。\n佐藤：準備の時間が足りるか心配です。\n井上：最初から全員に向けて始めなくてもよいと思います。\n田中：まずは小さく始めて、様子を見るのはどうでしょう？\n佐藤：それならできそうです。ただ、うまくいったかどうかを何で判断するか決めたいです。\n井上：参加した人の感想や、最後まで使ってくれた人数を見るのはどうでしょう。\n田中：では、今週中に対象と確認方法を決めましょう。`;
 const transcript = document.querySelector('#transcript');
+const responseArea = document.querySelector('#gpt-response');
 const results = document.querySelector('#results');
 const micButton = document.querySelector('#mic-button');
 const recordingStatus = document.querySelector('#recording-status');
@@ -22,6 +23,90 @@ let lastTopicTranscript = '';
 let pendingTopicAppend = '';
 let topicSendTimer = null;
 let topicRequestQueue = Promise.resolve();
+let analysisTimer = null;
+let analysisAbortController = null;
+let renderedTopicCount = 0;
+
+function renderGPTResponse() {
+  const suggestionList = document.querySelector('#suggestion-list');
+  const markerPattern = /(\[話題\d+\]|【(?:要約|決定事項|未決事項・課題|提案)】)/g;
+  const parts = responseArea.value.trim().split(markerPattern);
+  const topics = [];
+  const unstructured = [];
+  let topic = null;
+  let section = null;
+
+  for (const part of parts) {
+    if (/^\[話題\d+\]$/.test(part)) {
+      topic = { title: part.slice(1, -1), sections: [], text: '' };
+      topics.push(topic);
+      section = null;
+    } else if (/^【(?:要約|決定事項|未決事項・課題|提案)】$/.test(part)) {
+      section = { title: part.slice(1, -1), text: '' };
+      if (topic) topic.sections.push(section);
+      else unstructured.push(section);
+    } else if (part) {
+      if (section) section.text += part;
+      else if (topic) topic.text += part;
+      else unstructured.push(part);
+    }
+  }
+
+  suggestionList.replaceChildren();
+  if (!responseArea.value.trim()) {
+    document.querySelector('#result-summary').textContent = '';
+    results.classList.add('hidden');
+    return;
+  }
+
+  document.querySelector('#result-summary').textContent = 'GPT APIからの出力';
+  for (const item of topics) {
+    const article = document.createElement('article');
+    article.className = 'suggestion analysis-topic';
+    const heading = document.createElement('h3');
+    heading.className = 'analysis-topic-title';
+    heading.textContent = item.title;
+    article.append(heading);
+    if (item.text.trim()) {
+      const content = document.createElement('p');
+      content.textContent = item.text.trim();
+      article.append(content);
+    }
+    for (const itemSection of item.sections) {
+      const sectionElement = document.createElement('section');
+      sectionElement.className = 'analysis-section';
+      const sectionHeading = document.createElement('h4');
+      sectionHeading.textContent = itemSection.title;
+      const content = document.createElement('p');
+      content.textContent = itemSection.text.trim();
+      sectionElement.append(sectionHeading, content);
+      article.append(sectionElement);
+    }
+    suggestionList.append(article);
+  }
+  const fallbackText = unstructured.map(item => typeof item === 'string' ? item : `${item.title} ${item.text}`)
+    .join('\n\n').trim();
+  if (fallbackText) {
+    const article = document.createElement('article');
+    article.className = 'suggestion';
+    const content = document.createElement('p');
+    content.textContent = fallbackText;
+    article.append(content);
+    suggestionList.append(article);
+  }
+  const hasNewTopic = topics.length > renderedTopicCount;
+  renderedTopicCount = topics.length;
+  results.classList.remove('hidden');
+  if (hasNewTopic) {
+    requestAnimationFrame(() => {
+      const topicHeadings = suggestionList.querySelectorAll('.analysis-topic-title');
+      topicHeadings[topicHeadings.length - 1]
+        ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }
+}
+
+responseArea.addEventListener('input', renderGPTResponse);
 
 // すでに定義されている transcript にイベントを追加するだけにする
 if (transcript) {
@@ -34,6 +119,7 @@ function appendTranscriptItem(item) {
   transcript.value += addition;
   lastTopicTranscript = transcript.value;
   queueTopicAppend(addition);
+  scheduleTranscriptAnalysis();
   if (activeRecording) recordingAppendedText += addition;
 }
 
@@ -277,7 +363,8 @@ document.querySelector('#load-sample').addEventListener('click', () => {
 document.querySelector('#clear-text').addEventListener('click', () => {
   transcript.value = '';
   resetTopicDetector('');
-  document.querySelector('#gpt-response').value = '';
+  responseArea.value = '';
+  renderGPTResponse();
   speakerCount.value = '2';
   speakerNameFields.replaceChildren();
   speakerNameEditor.classList.add('hidden');
@@ -291,68 +378,13 @@ document.querySelector('#clear-text').addEventListener('click', () => {
   window.scrollTo({ top: 0, behavior: 'smooth' });
 });
 
-function makeSuggestions(text) {
-  const items = [];
-  if (/時間|足り|人手|負担|リソース|準備/.test(text)) {
-    items.push({
-      title: '小さく始めて、段階的に広げる',
-      body: 'まず対象を少人数に絞って試します。準備にかかる時間や運用上の問題を確認してから、対象を広げると負担を抑えられます。',
-      next: '次の会議で、試す対象と期間を決める'
-    });
-  }
-  if (/効果|判断|指標|測|確認|感想|決めきれ|決まら|未決/.test(text)) {
-    items.push({
-      title: '成功したかを確認する方法を決める',
-      body: '利用した人の感想と、最後まで利用した人数など、確認しやすい項目を決めます。試す前に基準を共有しておくと、次の判断につなげやすくなります。',
-      next: '確認する項目と担当者を決める'
-    });
-  }
-  if (/いつ|期限|来週|来月|次回|保留|判断/.test(text)) {
-    items.push({
-      title: '次に話し合う日を決めておく',
-      body: 'まだ決められない項目は、追加で必要な情報と担当者を明確にし、確認する日を設定します。',
-      next: '未決の項目ごとに担当者と期限を記録する'
-    });
-  }
-  if (!items.length) {
-    items.push({
-      title: '未決の点と、決めるために必要な情報を整理する',
-      body: '会話の中で結論が出なかった点を一つずつ書き出し、選択肢や判断に必要な情報を確認します。',
-      next: '項目ごとに担当者と確認期限を決める'
-    });
-  }
-  return items.slice(0, 3);
-}
-
-document.querySelector('#generate').addEventListener('click', () => {
-  const text = transcript.value.trim();
-  if (!text) {
-    transcript.focus();
-    transcript.setCustomValidity('会議の内容を入力してください。');
-    transcript.reportValidity();
-    transcript.setCustomValidity('');
-    return;
-  }
-
-  const suggestions = makeSuggestions(text);
-  document.querySelector('#result-summary').textContent = `${suggestions.length}件の解決案を作成しました。`;
-  document.querySelector('#suggestion-list').innerHTML = suggestions.map(item => `
-    <article class="suggestion">
-      <h3>${item.title}</h3>
-      <p>${item.body}</p>
-      <p class="next-step"><strong>次にすること：</strong>${item.next}</p>
-    </article>
-  `).join('');
-  results.classList.remove('hidden');
-  results.scrollIntoView({ behavior: 'smooth', block: 'start' });
-});
-
 function handleTranscriptInput() {
   const currentText = transcript.value;
   if (currentText.startsWith(lastTopicTranscript)) {
     const addition = currentText.slice(lastTopicTranscript.length);
     lastTopicTranscript = currentText;
     queueTopicAppend(addition);
+    scheduleTranscriptAnalysis();
     return;
   }
 
@@ -399,6 +431,83 @@ function resetTopicDetector(text) {
   })).catch((error) => {
     console.error('話題検出の文脈同期に失敗しました:', error);
   });
+  scheduleTranscriptAnalysis();
+}
+
+function scheduleTranscriptAnalysis() {
+  window.clearTimeout(analysisTimer);
+  analysisTimer = window.setTimeout(triggerTranscriptAnalysis, 700);
+}
+
+async function triggerTranscriptAnalysis() {
+  const text = transcript.value.trim();
+  if (!text) {
+    if (analysisAbortController) analysisAbortController.abort();
+    responseArea.value = '';
+    renderGPTResponse();
+    return;
+  }
+
+  if (analysisAbortController) analysisAbortController.abort();
+  analysisAbortController = new AbortController();
+  const signal = analysisAbortController.signal;
+  responseArea.value = 'ChatGPTで解析しています…';
+  renderGPTResponse();
+
+  try {
+    const response = await fetch('/analyze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ transcript: text }),
+      signal
+    });
+    if (!response.ok) {
+      const body = await response.text();
+      let detail = body;
+      try {
+        detail = JSON.parse(body).detail || body;
+      } catch {}
+      throw new Error(`HTTP ${response.status}: ${detail}`);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    const analyses = [];
+    const handleEvent = (line) => {
+      if (!line.trim()) return;
+      const event = JSON.parse(line);
+      if (event.error) throw new Error(event.error);
+      if (typeof event.analysis === 'string' && event.analysis.trim()) {
+        if (event.integration_state === '統合した' && analyses.length) {
+          analyses[analyses.length - 1] = event.analysis.trim();
+        } else {
+          analyses.push(event.analysis.trim());
+        }
+        responseArea.value = analyses.join('\n\n');
+        renderGPTResponse();
+      }
+    };
+
+    while (true) {
+      const { value, done } = await reader.read();
+      buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+      const lines = buffer.split('\n');
+      buffer = lines.pop();
+      lines.forEach(handleEvent);
+      if (done) break;
+    }
+    handleEvent(buffer);
+    if (!analyses.length) {
+      responseArea.value = '解析結果がありませんでした。';
+      renderGPTResponse();
+    }
+  } catch (error) {
+    if (error.name === 'AbortError') return;
+    console.error('/analyzeの呼び出しに失敗しました:', error);
+    responseArea.value = `ChatGPT解析に失敗しました: ${error.message}`;
+    renderGPTResponse();
+  }
 }
 
 resetTopicDetector(transcript.value);

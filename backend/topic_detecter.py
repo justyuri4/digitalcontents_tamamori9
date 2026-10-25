@@ -27,9 +27,12 @@ class TopicShiftDetector:
       model_name="intfloat/multilingual-e5-small",
       threshold=DEFAULT_THRESHOLD,
       on_topic_completed=None,
+      model=None,
   ):
-    print(f"モデルをロード中: {model_name}...")
-    self.model = SentenceTransformer(model_name)
+    if model is None:
+      print(f"モデルをロード中: {model_name}...")
+      model = SentenceTransformer(model_name)
+    self.model = model
     self.threshold = threshold  # コンフィグは委託先で保持
     self.current_topic = []
     # 話題が確定した瞬間に呼び出すイベントコールバック

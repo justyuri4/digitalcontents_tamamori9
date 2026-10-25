@@ -14,6 +14,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 import whisper
 
+from index.realtime_transcriber import TranscriptionService as RealtimeTranscriptionService
+
 
 PROJECT_DIR = Path(__file__).resolve().parent
 DATABASE_PATH = PROJECT_DIR / "transcripts.db"
@@ -63,38 +65,9 @@ def save_transcript(text: str):
         )
 
 
-class TranscriptionService:
-    """音声文字起こしサービスを管理するクラス。"""
-
-    def __init__(self, model_name: str = "base"):
-        self.model_name = model_name
-        self.model = None
-        self._running = False
-
-    def start(self) -> str:
-        if self._running:
-            return "already_running"
-        self._running = True
-        if self.model is None:
-            self.model = load_whisper_model(self.model_name)
-        return "started"
-
-    def stop(self) -> str:
-        if not self._running:
-            return "not_running"
-        self._running = False
-        return "stopped"
-
-    def get_status(self) -> dict:
-        return {
-            "running": self._running,
-            "model": self.model_name,
-        }
-
-
 # --- FastAPI アプリケーション設定 ---
 
-service = TranscriptionService(model_name=MODEL_NAME)
+service = RealtimeTranscriptionService(model_name=MODEL_NAME, database_path=DATABASE_PATH)
 initialize_database()
 
 

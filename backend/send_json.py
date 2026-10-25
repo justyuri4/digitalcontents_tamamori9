@@ -6,6 +6,7 @@ from ai_treat import (
     get_sample_output_log_path,
     get_chatgpt_response,
     ANALYSIS_PROMPT_TEMPLATE,
+    store_topic_analysis,
 )
 from topic_detecter import TopicShiftDetector
 
@@ -28,9 +29,12 @@ def run_analysis_to_json():
             analysis_log_path=get_sample_output_log_path(None),
         )
 
-        detector = TopicShiftDetector(
-            on_topic_completed=lambda topic: results.append(analyzer.analyze_topic(topic))
-        )
+        def handle_topic_completed(topic):
+            result = store_topic_analysis(results, analyzer.analyze_topic(topic))
+            if result is not None:
+                analyzer.previous_topic = result["topic"]
+
+        detector = TopicShiftDetector(on_topic_completed=handle_topic_completed)
 
         for message in messages:
             detector.add_message(message)

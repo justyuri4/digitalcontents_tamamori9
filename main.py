@@ -8,7 +8,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -96,6 +96,11 @@ def read_root():
   return HTMLResponse(content=index_file.read_text(encoding="utf-8"), status_code=200)
 
 
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon():
+  return Response(status_code=204)
+
+
 # 2. チャット用のAPIエンドポイント
 @app.post("/chat", response_model=ChatResponse)
 def chat_endpoint(request: ChatRequest):
@@ -131,6 +136,7 @@ async def analyze_transcript(request: AnalyzeRequest):
       run_analysis_from_messages(
           messages,
           threshold=request.threshold,
+          model=get_topic_detector().model,
           on_update=lambda results: publish(results[-1]),
       )
     except Exception as error:
@@ -217,7 +223,11 @@ async def get_gpt_response_api():
           load_messages,
           LiveTopicAnalyzer,
         )
-        from backend.ai_service import ANALYSIS_PROMPT_TEMPLATE, get_chatgpt_response
+        from backend.ai_service import (
+          ANALYSIS_PROMPT_TEMPLATE,
+          get_chatgpt_response,
+          store_topic_analysis,
+        )
         from backend.topic_detecter import TopicShiftDetector
 
         messages = load_messages(None)
@@ -234,9 +244,12 @@ async def get_gpt_response_api():
           analysis_log_path=get_sample_output_log_path(None),
         )
 
-        detector = TopicShiftDetector(
-            on_topic_completed=lambda topic: results.append(analyzer.analyze_topic(topic))
-        )
+        def handle_topic_completed(topic):
+          result = store_topic_analysis(results, analyzer.analyze_topic(topic))
+          if result is not None:
+            analyzer.previous_topic = result["topic"]
+
+        detector = TopicShiftDetector(on_topic_completed=handle_topic_completed)
 
         for message in messages:
             detector.add_message(message)

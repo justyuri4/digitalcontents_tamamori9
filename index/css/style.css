@@ -45,6 +45,12 @@ button:hover { background: #f2f4f6; }
 .suggestion h3 { margin: 0 0 7px; font-size: 16px; }
 .suggestion p { margin: 0; color: #444; line-height: 1.7; }
 .suggestion .next-step { margin-top: 8px; color: #555; font-size: 13px; }
+.analysis-topic { padding: 16px 0; }
+.analysis-topic-title { margin: 0 0 12px; padding: 8px 12px; border-left: 4px solid #315f91; background: #eef4fa; color: #23466b; font-size: 17px; }
+.analysis-section { display: grid; grid-template-columns: minmax(150px, 220px) 1fr; gap: 12px; padding: 10px 12px; border-top: 1px solid #e5e9ee; }
+.analysis-section h4 { margin: 0; color: #315f91; font-size: 14px; }
+.analysis-section p { white-space: pre-line; }
+.analysis-topic > p { white-space: pre-line; }
 .hidden { display: none; }
 footer { padding: 8px 0 24px; color: #777; font-size: 12px; }
-@media (max-width: 700px) { .page { margin-top: 28px; } .panel { padding: 17px; } h1 { font-size: 24px; } .primary { margin-left: 0; width: 100%; } .voice-inputs, .conversation-columns { grid-template-columns: 1fr; } }
+@media (max-width: 700px) { .page { margin-top: 28px; } .panel { padding: 17px; } h1 { font-size: 24px; } .primary { margin-left: 0; width: 100%; } .voice-inputs, .conversation-columns { grid-template-columns: 1fr; } .analysis-section { grid-template-columns: 1fr; gap: 4px; } }
